@@ -5,7 +5,9 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
+import javax.crypto.Cipher;
 import javax.crypto.Mac;
+import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 public final class ClpCrypto {
@@ -21,18 +23,15 @@ public final class ClpCrypto {
     private final Secp256r1 curve = new Secp256r1();
 
     public KeyMaterial generateStaticKey() {
-        // 静态密钥用于标识实体身份，后续 KGC 会基于它签发部分私钥。
         BigInteger x = curve.randomScalar();
         return new KeyMaterial(x, Hexs.encode(curve.encode(curve.multiply(Secp256r1.G, x))));
     }
 
     public BigInteger composeFullPrivate(BigInteger secret, String partialHex) {
-        // 完整私钥 sk_i = x_i + d_i mod n。
         return secret.add(new BigInteger(1, Hexs.decode(partialHex))).mod(Secp256r1.N);
     }
 
     public String deriveFullPublic(String id, String publicKeyHex, String masterPublicKeyHex) {
-        // 公开可验证的完整公钥：PK_i = P_i + H1(ID_i || P_i) * Ppub。
         BigInteger h = h1(id, publicKeyHex);
         Secp256r1.Point p = curve.decode(Hexs.decode(publicKeyHex));
         Secp256r1.Point ppub = curve.decode(Hexs.decode(masterPublicKeyHex));
@@ -40,8 +39,37 @@ public final class ClpCrypto {
         return Hexs.encode(curve.encode(full));
     }
 
+    public byte[] eciesDecrypt(String encryptedBlobHex, BigInteger secretScalar) {
+        try {
+            byte[] blob = Hexs.decode(encryptedBlobHex);
+
+            byte[] R_bytes = Arrays.copyOfRange(blob, 0, 65);
+            byte[] iv = Arrays.copyOfRange(blob, 65, 77);
+            byte[] ciphertextWithTag = Arrays.copyOfRange(blob, 77, blob.length);
+
+            Secp256r1.Point R = curve.decode(R_bytes);
+            Secp256r1.Point S = curve.multiply(R, secretScalar);
+
+            byte[] sharedX = curve.toFixed(S.x(), 32);
+            byte[] aesKey = sha256(sharedX);
+
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(128, iv);
+            SecretKeySpec keySpec = new SecretKeySpec(aesKey, "AES");
+            cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec);
+            return cipher.doFinal(ciphertextWithTag);
+        } catch (Exception e) {
+            throw new IllegalStateException("ECIES decryption failed", e);
+        }
+    }
+
+    public BigInteger composeFullPrivateDecrypted(BigInteger secret, String encryptedPartialHex) {
+        byte[] partialBytes = eciesDecrypt(encryptedPartialHex, secret);
+        BigInteger partialPrivate = new BigInteger(1, partialBytes);
+        return secret.add(partialPrivate).mod(Secp256r1.N);
+    }
+
     public Signature sign(byte[] ra, String id, byte[] wb, String t, BigInteger fullPrivate) {
-        // 签名内容对应文档公式：Sigma_A = sign(params, RA || IDA || WB || T, SKA)。
         byte[] transcript = transcript(ra, id, wb, t);
         BigInteger k = curve.randomScalar();
         Secp256r1.Point rPoint = curve.multiply(Secp256r1.G, k);
@@ -52,7 +80,6 @@ public final class ClpCrypto {
     }
 
     public boolean verify(byte[] ra, String id, byte[] wb, String t, String sigHex, String fullPublicHex) {
-        // 验签检查：sG 是否等于 R + e * PK。
         byte[] sig = Hexs.decode(sigHex);
         byte[] rEncoded = Arrays.copyOfRange(sig, 0, 65);
         BigInteger s = new BigInteger(1, Arrays.copyOfRange(sig, 65, 97));
@@ -66,7 +93,6 @@ public final class ClpCrypto {
     }
 
     public String deriveSessionKey(BigInteger ephemeralScalar, byte[] peerPoint, byte[] ra, byte[] rb, String ida, String idb, String ta, String tb) {
-        // 先做 ECDH，再把共享点 X 坐标和双方上下文一起送入 KDF。
         Secp256r1.Point shared = curve.multiply(curve.decode(peerPoint), ephemeralScalar);
         byte[] sharedX = curve.toFixed(shared.x(), 32);
         return Hexs.encode(hash(sharedX, ra, rb, ida.getBytes(StandardCharsets.UTF_8), idb.getBytes(StandardCharsets.UTF_8),
@@ -85,6 +111,15 @@ public final class ClpCrypto {
 
     public BigInteger h1(String id, String publicKeyHex) {
         return hashToScalar(id.getBytes(StandardCharsets.UTF_8), Hexs.decode(publicKeyHex));
+    }
+
+    byte[] sha256(byte[] data) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return md.digest(data);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private BigInteger hashToScalar(byte[]... parts) {

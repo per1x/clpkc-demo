@@ -38,6 +38,7 @@ public:
                                    const std::string& ida, const std::string& idb,
                                    const std::string& ta, const std::string& tb);
     std::string hmac_sha256_hex(const std::string& key_hex, const std::string& data_hex);
+    std::string ecies_decrypt(const std::string& encrypted_blob_hex, const std::string& private_key_hex);
 
 private:
     EC_GROUP* group_;

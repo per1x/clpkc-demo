@@ -1,6 +1,7 @@
 #include "crypto_utils.h"
 
 #include <arpa/inet.h>
+#include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -233,4 +234,68 @@ BIGNUM* CryptoUtils::random_scalar() const {
         BN_rand_range(out, order_);
     } while (BN_is_zero(out));
     return out;
+}
+
+std::string CryptoUtils::ecies_decrypt(const std::string& ciphertext_hex, const std::string& secret_hex) {
+    auto data = hex_to_bytes(ciphertext_hex);
+    if (data.size() != 65 + 12 + 32 + 16) {
+        throw std::runtime_error("invalid ECIES ciphertext length");
+    }
+    auto r_bytes = std::vector<unsigned char>(data.begin(), data.begin() + 65);
+    auto nonce = std::vector<unsigned char>(data.begin() + 65, data.begin() + 77);
+    auto ciphertext = std::vector<unsigned char>(data.begin() + 77, data.begin() + 109);
+    auto tag = std::vector<unsigned char>(data.begin() + 109, data.begin() + 125);
+
+    PointPtr R(EC_POINT_new(group_), EC_POINT_free);
+    EC_POINT_oct2point(group_, R.get(), r_bytes.data(), r_bytes.size(), ctx_);
+
+    BnPtr x(hex_to_bn(secret_hex), BN_free);
+    PointPtr S(EC_POINT_new(group_), EC_POINT_free);
+    EC_POINT_mul(group_, S.get(), nullptr, R.get(), x.get(), ctx_);
+
+    BIGNUM* sx = BN_new();
+    BIGNUM* sy = BN_new();
+    EC_POINT_get_affine_coordinates(group_, S.get(), sx, sy, ctx_);
+    std::vector<unsigned char> x_coord(32);
+    BN_bn2binpad(sx, x_coord.data(), 32);
+    BN_free(sx);
+    BN_free(sy);
+
+    auto key = sha256(x_coord);
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        throw std::runtime_error("EVP_CIPHER_CTX_new failed");
+    }
+    int len = 0;
+    std::vector<unsigned char> plaintext(32);
+    if (!EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr)) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("EVP_DecryptInit_ex failed");
+    }
+    if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, static_cast<int>(nonce.size()), nullptr)) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("EVP_CIPHER_CTX_ctrl SET_IVLEN failed");
+    }
+    if (!EVP_DecryptInit_ex(ctx, nullptr, nullptr, key.data(), nonce.data())) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("EVP_DecryptInit_ex key/nonce failed");
+    }
+    if (!EVP_DecryptUpdate(ctx, plaintext.data(), &len, ciphertext.data(), static_cast<int>(ciphertext.size()))) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("EVP_DecryptUpdate failed");
+    }
+    int plaintext_len = len;
+    if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, static_cast<int>(tag.size()), tag.data())) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("EVP_CIPHER_CTX_ctrl SET_TAG failed");
+    }
+    if (!EVP_DecryptFinal_ex(ctx, plaintext.data() + plaintext_len, &len)) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("EVP_DecryptFinal_ex failed: tag verification failed");
+    }
+    plaintext_len += len;
+    EVP_CIPHER_CTX_free(ctx);
+    plaintext.resize(plaintext_len);
+    return bytes_to_hex(plaintext);
 }

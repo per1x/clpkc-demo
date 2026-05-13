@@ -8,6 +8,7 @@ import com.sun.net.httpserver.HttpsServer;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.math.BigInteger;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -89,9 +90,11 @@ public final class KgcServer {
             System.out.println("[KGC] 申请方静态公钥 P_i = " + publicKey);
             Map<String, String> body = new LinkedHashMap<>();
             body.put("curve", "secp256r1");
-            body.put("partialPrivate", Hexs.encode(new Secp256r1().toFixed(crypto.issuePartialPrivate(id, publicKey), 32)));
+            byte[] partialBytes = new Secp256r1().toFixed(crypto.issuePartialPrivate(id, publicKey), 32);
+            String encryptedBlob = crypto.eciesEncrypt(partialBytes, publicKey);
+            body.put("partialPrivate", encryptedBlob);
             body.put("masterPublicKey", crypto.getMasterPublicHex());
-            System.out.println("[KGC] 已生成部分私钥并通过 HTTPS 返回给调用方: id=" + id);
+            System.out.println("[KGC] 已生成部分私钥并 ECIES 加密后通过 HTTPS 返回给调用方: id=" + id);
             writeJson(exchange, 200, body);
         }
     }

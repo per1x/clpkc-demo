@@ -75,6 +75,30 @@ KGC -> Cloud -> Pile:
 {"type":"partial_key_response","curve":"secp256r1","partialPrivate":"<hex>","masterPublicKey":"<hex>"}
 ```
 
+The `partialPrivate` field contains the ECIES-encrypted partial private key `d_i`. The ciphertext format (hex) is:
+
+`R(65B) || nonce(12B) || ciphertext(32B) || tag(16B)` = 250 hex chars
+
+Where:
+- `R` is the ephemeral public key point (SEC1 uncompressed)
+- `nonce` is the AES-256-GCM nonce
+- `ciphertext` is the encrypted `d_i` scalar
+- `tag` is the AES-256-GCM authentication tag
+
+**ECIES Encryption** (performed by KGC):
+1. Generate ephemeral key pair `(r, R = rG)`
+2. Compute shared point `S = r * P_i` where `P_i` is the requester's public key
+3. Derive AES-256 key: `k = SHA256(x(S))` where `x(S)` is the 32-byte X coordinate of `S`
+4. Encrypt `d_i` with AES-256-GCM using key `k` and a random 12-byte nonce
+5. Output: `encode(R) || nonce || ciphertext || tag`
+
+**ECIES Decryption** (performed by the recipient, e.g., Cloud or Pile):
+1. Parse `R`, `nonce`, `ciphertext`, `tag` from the received hex string
+2. Compute shared point `S = x_i * R` where `x_i` is the recipient's secret scalar
+3. Derive AES-256 key: `k = SHA256(x(S))`
+4. Decrypt with AES-256-GCM using key `k` and nonce, verify authentication tag
+5. Recover plaintext `d_i`
+
 ### 3. Signed ECDH
 
 Pile -> Cloud:

@@ -9,6 +9,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -31,7 +32,7 @@ public final class CloudPlatformServer {
         ownReq.put("publicKey", cloudStatic.publicKeyHex());
         Map<String, String> ownResp = kgcClient.post(kgcUrl, ownReq);
         String masterPublicKey = ownResp.get("masterPublicKey");
-        BigInteger cloudFullPrivate = crypto.composeFullPrivate(cloudStatic.secretScalar(), ownResp.get("partialPrivate"));
+        BigInteger cloudFullPrivate = crypto.composeFullPrivateDecrypted(cloudStatic.secretScalar(), ownResp.get("partialPrivate"));
         String cloudFullPublic = crypto.deriveFullPublic(cloudId, cloudStatic.publicKeyHex(), masterPublicKey);
         System.out.println("[Cloud] 静态公钥 P_i = " + cloudStatic.publicKeyHex());
         System.out.println("[Cloud] 完整公钥 PK_i = " + cloudFullPublic);
