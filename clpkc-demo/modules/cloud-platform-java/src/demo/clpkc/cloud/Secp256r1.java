@@ -1,0 +1,94 @@
+package demo.clpkc.cloud;
+
+import java.math.BigInteger;
+import java.security.SecureRandom;
+import java.util.Arrays;
+
+public final class Secp256r1 {
+    public static final BigInteger P = new BigInteger("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff", 16);
+    public static final BigInteger A = new BigInteger("ffffffff00000001000000000000000000000000fffffffffffffffffffffffc", 16);
+    public static final BigInteger N = new BigInteger("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", 16);
+    public static final Point G = new Point(
+        new BigInteger("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", 16),
+        new BigInteger("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5", 16),
+        false
+    );
+
+    public record Point(BigInteger x, BigInteger y, boolean infinity) {
+    }
+
+    private final SecureRandom random = new SecureRandom();
+
+    public BigInteger randomScalar() {
+        BigInteger r;
+        do {
+            r = new BigInteger(256, random).mod(N);
+        } while (r.equals(BigInteger.ZERO));
+        return r;
+    }
+
+    public Point multiply(Point p, BigInteger k) {
+        Point result = new Point(BigInteger.ZERO, BigInteger.ZERO, true);
+        Point addend = p;
+        BigInteger n = k.mod(N);
+        while (n.signum() > 0) {
+            if (n.testBit(0)) {
+                result = add(result, addend);
+            }
+            addend = doublePoint(addend);
+            n = n.shiftRight(1);
+        }
+        return result;
+    }
+
+    public Point add(Point p, Point q) {
+        if (p.infinity()) {
+            return q;
+        }
+        if (q.infinity()) {
+            return p;
+        }
+        if (p.x().equals(q.x())) {
+            if (p.y().add(q.y()).mod(P).equals(BigInteger.ZERO)) {
+                return new Point(BigInteger.ZERO, BigInteger.ZERO, true);
+            }
+            return doublePoint(p);
+        }
+        BigInteger lambda = q.y().subtract(p.y()).multiply(q.x().subtract(p.x()).mod(P).modInverse(P)).mod(P);
+        BigInteger rx = lambda.multiply(lambda).subtract(p.x()).subtract(q.x()).mod(P);
+        BigInteger ry = lambda.multiply(p.x().subtract(rx)).subtract(p.y()).mod(P);
+        return new Point(rx, ry, false);
+    }
+
+    private Point doublePoint(Point p) {
+        if (p.infinity() || p.y().equals(BigInteger.ZERO)) {
+            return new Point(BigInteger.ZERO, BigInteger.ZERO, true);
+        }
+        BigInteger lambda = p.x().multiply(p.x()).multiply(BigInteger.valueOf(3)).add(A)
+            .multiply(p.y().multiply(BigInteger.TWO).modInverse(P)).mod(P);
+        BigInteger rx = lambda.multiply(lambda).subtract(p.x().shiftLeft(1)).mod(P);
+        BigInteger ry = lambda.multiply(p.x().subtract(rx)).subtract(p.y()).mod(P);
+        return new Point(rx, ry, false);
+    }
+
+    public byte[] encode(Point p) {
+        byte[] out = new byte[65];
+        out[0] = 0x04;
+        System.arraycopy(toFixed(p.x(), 32), 0, out, 1, 32);
+        System.arraycopy(toFixed(p.y(), 32), 0, out, 33, 32);
+        return out;
+    }
+
+    public Point decode(byte[] data) {
+        return new Point(new BigInteger(1, Arrays.copyOfRange(data, 1, 33)), new BigInteger(1, Arrays.copyOfRange(data, 33, 65)), false);
+    }
+
+    public byte[] toFixed(BigInteger v, int size) {
+        byte[] raw = v.toByteArray();
+        byte[] out = new byte[size];
+        int start = raw.length > size ? raw.length - size : 0;
+        int len = Math.min(raw.length, size);
+        System.arraycopy(raw, start, out, size - len, len);
+        return out;
+    }
+}
