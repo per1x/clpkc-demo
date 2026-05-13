@@ -1,0 +1,34 @@
+# Build artifacts
+*.class
+*.o
+*.o.d
+*.so
+*.a
+a.out
+
+# Java output
+out/
+
+# C++ build
+build/
+
+# Logs
+logs/*.log
+
+# Certificates (dev certs are generated locally)
+certs/*.p12
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archives
+*.tar.gz
+*.zip
+*.rar
+.sisyphus/
