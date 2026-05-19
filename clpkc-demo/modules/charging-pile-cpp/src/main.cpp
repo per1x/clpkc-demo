@@ -94,9 +94,10 @@ int main() {
     auto partial = json_parse(read_line(fd));
     std::cout << "[Pile][Socket] 收到部分私钥响应: " << json_stringify(partial) << "\n";
     const std::string decrypted_partial = crypto.ecies_decrypt(partial["partialPrivate"], static_key.secret_hex);
+    const std::string derived_public = crypto.compute_derived_public(decrypted_partial);
     const std::string full_private = crypto.compose_full_private(static_key.secret_hex, decrypted_partial);
-    const std::string master_public = partial["masterPublicKey"];
     std::cout << "[Pile] 已 ECIES 解密部分私钥并根据 x_i + d_i 组装完整私钥 sk_i。\n";
+    std::cout << "[Pile] 派生公钥 Y_i = " << derived_public << "\n";
 
     // 第三步：生成临时 ECDH 公钥 RA，并对 RA || IDA || WB || T 做签名。
     KeyMaterial eph = crypto.generate_static_key();
@@ -108,6 +109,7 @@ int main() {
         {"type", "ka_request"},
         {"id", pile_id},
         {"publicKey", static_key.public_hex},
+        {"derivedPublic", derived_public},
         {"ra", eph.public_hex},
         {"t", ta},
         {"sig", sig.to_hex()}
@@ -121,7 +123,7 @@ int main() {
     }
 
     // 第四步：根据 Cloud 的静态公钥和 KGC 主公钥恢复 Cloud 完整公钥，再验签。
-    const std::string cloud_full_public = crypto.derive_full_public(ka["id"], ka["publicKey"], master_public);
+    const std::string cloud_full_public = crypto.derive_full_public(ka["publicKey"], ka["derivedPublic"]);
     const bool ok = crypto.verify_transcript(ka["rb"], ka["id"], eph.public_hex, ka["t"], ka["sig"], cloud_full_public);
     if (!ok) {
         std::cerr << "[Pile] Cloud 签名校验失败，拒绝使用本次协商结果。\n";

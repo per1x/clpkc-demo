@@ -28,7 +28,8 @@ public:
 
     KeyMaterial generate_static_key();
     std::string compose_full_private(const std::string& secret_hex, const std::string& partial_hex);
-    std::string derive_full_public(const std::string& id, const std::string& public_hex, const std::string& master_public_hex);
+    std::string compute_derived_public(const std::string& point_hex);
+    std::string derive_full_public(const std::string& public_hex, const std::string& derived_public_hex);
     Signature sign_transcript(const std::string& ra_hex, const std::string& id, const std::string& wb_hex,
                               const std::string& t, const std::string& full_private_hex);
     bool verify_transcript(const std::string& ra_hex, const std::string& id, const std::string& wb_hex,
@@ -52,7 +53,7 @@ private:
     std::vector<unsigned char> sha256(const std::vector<unsigned char>& data) const;
     std::vector<unsigned char> transcript(const std::string& ra_hex, const std::string& id,
                                           const std::string& wb_hex, const std::string& t) const;
-    BIGNUM* h1(const std::string& id, const std::string& public_hex) const;
+    std::string hash_point_to_scalar(const std::string& point_hex) const;
     std::vector<unsigned char> point_to_bytes(const EC_POINT* point) const;
     EC_POINT* point_from_hex(const std::string& hex) const;
     BIGNUM* random_scalar() const;
