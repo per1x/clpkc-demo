@@ -103,12 +103,6 @@ public final class ClpCrypto {
         Secp256r1.Point r = curve.decode(rEncoded);
         Secp256r1.Point pk = curve.decode(Hexs.decode(fullPublicHex));
         Secp256r1.Point right = curve.add(r, curve.multiply(pk, e));
-        System.out.println("[DEBUG] verify: fullPublicHex=" + fullPublicHex);
-        System.out.println("[DEBUG] verify: sigHex=" + sigHex);
-        System.out.println("[DEBUG] verify: e=" + e.toString(16));
-        System.out.println("[DEBUG] verify: s=" + s.toString(16));
-        System.out.println("[DEBUG] verify: left=(" + left.x().toString(16) + "," + left.y().toString(16) + ")");
-        System.out.println("[DEBUG] verify: right=(" + right.x().toString(16) + "," + right.y().toString(16) + ")");
         return !left.infinity() && left.x().equals(right.x()) && left.y().equals(right.y());
     }
 
