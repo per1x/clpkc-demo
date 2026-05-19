@@ -90,7 +90,8 @@ public final class KgcServer {
             System.out.println("[KGC] 申请方静态公钥 P_i = " + publicKey);
             Map<String, String> body = new LinkedHashMap<>();
             body.put("curve", "secp256r1");
-            byte[] partialBytes = new Secp256r1().toFixed(crypto.issuePartialPrivate(id, publicKey), 32);
+            Secp256r1.Point D_i = crypto.issuePartialPrivate(id, publicKey);
+            byte[] partialBytes = crypto.curve().encode(D_i);
             String encryptedBlob = crypto.eciesEncrypt(partialBytes, publicKey);
             body.put("partialPrivate", encryptedBlob);
             body.put("masterPublicKey", crypto.getMasterPublicHex());

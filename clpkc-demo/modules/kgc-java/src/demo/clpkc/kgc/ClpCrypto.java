@@ -26,9 +26,14 @@ public final class ClpCrypto {
         return Hexs.encode(curve.encode(masterPublic));
     }
 
-    public BigInteger issuePartialPrivate(String id, String publicKeyHex) {
-        BigInteger h = h1(id, publicKeyHex);
-        return masterSecret.multiply(h).mod(Secp256r1.N);
+    public Secp256r1.Point issuePartialPrivate(String id, String publicKeyHex) {
+        Secp256r1.Point Q_i = curve.hashToCurve(
+            id.getBytes(StandardCharsets.UTF_8), Hexs.decode(publicKeyHex));
+        return curve.multiply(Q_i, masterSecret);
+    }
+
+    Secp256r1 curve() {
+        return curve;
     }
 
     public BigInteger h1(String id, String publicKeyHex) {

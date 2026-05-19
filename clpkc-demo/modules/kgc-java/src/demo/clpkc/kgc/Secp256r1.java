@@ -1,6 +1,8 @@
 package demo.clpkc.kgc;
 
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
@@ -99,5 +101,53 @@ public final class Secp256r1 {
         int copyLen = Math.min(raw.length, size);
         System.arraycopy(raw, copyStart, out, size - copyLen, copyLen);
         return out;
+    }
+
+    /**
+     * Hash-to-curve via try-and-increment: H1(data) -> Point on secp256r1.
+     * Uses SHA-256, appends a 4-byte counter, treats the digest as an x-coordinate
+     * candidate and solves for y using the Tonelli-Shanks shortcut (P ≡ 3 mod 4).
+     */
+    public Point hashToCurve(byte[]... dataParts) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            for (int counter = 0; counter < 256; counter++) {
+                MessageDigest mdc = (MessageDigest) md.clone();
+                for (byte[] part : dataParts) {
+                    mdc.update(part);
+                }
+                mdc.update(new byte[]{
+                    (byte) (counter >> 24), (byte) (counter >> 16),
+                    (byte) (counter >> 8), (byte) counter
+                });
+                byte[] digest = mdc.digest();
+
+                BigInteger x = new BigInteger(1, digest).mod(P);
+                if (x.signum() == 0) continue;
+
+                // y² = x³ + ax + b  (mod P)
+                BigInteger x3 = x.modPow(BigInteger.valueOf(3), P);
+                BigInteger ax = A.multiply(x).mod(P);
+                BigInteger rhs = x3.add(ax).add(B).mod(P);
+
+                // For P ≡ 3 mod 4: sqrt(a) = a^((P+1)/4) mod P
+                BigInteger exp = P.add(BigInteger.ONE).divide(BigInteger.valueOf(4));
+                BigInteger y = rhs.modPow(exp, P);
+
+                BigInteger y2 = y.multiply(y).mod(P);
+                if (!y2.equals(rhs)) continue;
+
+                // Choose parity from last bit of digest
+                boolean wantEven = (digest[digest.length - 1] & 1) == 0;
+                boolean yEven = y.mod(BigInteger.TWO).signum() == 0;
+                if (wantEven != yEven) {
+                    y = P.subtract(y);
+                }
+                return new Point(x, y, false);
+            }
+            throw new IllegalStateException("hashToCurve: failed after 256 attempts");
+        } catch (Exception e) {
+            throw new IllegalStateException("hashToCurve: " + e.getMessage(), e);
+        }
     }
 }
