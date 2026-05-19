@@ -13,7 +13,56 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+/**
+ * Cloud 平台 TCP 服务器。
+ *
+ * <p>作为 CL-PKC 演示中的 Cloud 端，提供以下功能：
+ * <ol>
+ *   <li>启动时生成自己的静态密钥对，通过 HTTPS 向 KGC 申请部分私钥，
+ *       组合出完整密钥</li>
+ *   <li>接受充电桩（Pile）的 TCP 连接，执行四步握手协议：
+ *     <ul>
+ *       <li><b>第一步</b>：HMAC challenge-response 预共享密钥认证</li>
+ *       <li><b>第二步</b>：转发充电桩的部分私钥申请到 KGC，透传结果</li>
+ *       <li><b>第三步</b>：接收充电桩带 Schnorr 签名的 ECDH 请求，验签</li>
+ *       <li><b>第四步</b>：生成临时 ECDH 密钥对，签名后返回，派生会话密钥</li>
+ *     </ul>
+ *   </li>
+ * </ol>
+ *
+ * <p>运行参数（通过系统属性配置）：
+ * <ul>
+ *   <li>{@code cloud.id}：Cloud 身份标识（默认 cloud-001）</li>
+ *   <li>{@code kgc.url}：KGC 部分私钥 API 地址</li>
+ *   <li>{@code kgc.cert}：KGC TLS 证书 PEM 路径</li>
+ *   <li>{@code cloud.port}：TCP 监听端口（默认 9000）</li>
+ *   <li>{@code shared.key}：与充电桩的预共享密钥（十六进制）</li>
+ * </ul>
+ *
+ * <p>安全设计要点：</p>
+ * <ul>
+ *   <li>与 KGC 通信使用 HTTPS + 证书固定</li>
+ *   <li>与充电桩通信使用预共享密钥 HMAC 做初始认证</li>
+ *   <li>ECDH 请求/响应均附带 Schnorr 签名防止中间人篡改</li>
+ *   <li>会话密钥派生绑定了完整的协议 transcript</li>
+ * </ul>
+ */
 public final class CloudPlatformServer {
+    /**
+     * Cloud 平台服务器入口。
+     *
+     * <p>启动流程：
+     * <ol>
+     *   <li>读取系统属性配置（cloud.id、kgc.url、cloud.port、shared.key 等）</li>
+     *   <li>生成 Cloud 自己的静态密钥对 (x_cloud, P_cloud)</li>
+     *   <li>通过 HTTPS 向 KGC 申请部分私钥，组合出完整密钥 sk_cloud 和 Y_cloud</li>
+     *   <li>计算完整公钥 PK_cloud = P_cloud + Y_cloud</li>
+     *   <li>启动 TCP ServerSocket，循环接受充电桩连接</li>
+     * </ol>
+     *
+     * @param args 命令行参数（未使用，配置通过系统属性传入）
+     * @throws Exception 若任何初始化步骤或网络操作失败
+     */
     public static void main(String[] args) throws Exception {
         String cloudId = System.getProperty("cloud.id", "cloud-001");
         String kgcUrl = System.getProperty("kgc.url", "https://localhost:8443/api/partial-key");
@@ -53,9 +102,56 @@ public final class CloudPlatformServer {
         }
     }
 
+    /**
+     * 处理单个充电桩连接的完整握手流程。
+     *
+     * <p>四步握手协议：
+     *
+     * <h3>第一步：HMAC challenge-response 认证</h3>
+     * <ol>
+     *   <li>Cloud 生成 16 字节随机 nonce 发送给充电桩</li>
+     *   <li>充电桩用预共享密钥对 nonce 做 HMAC-SHA256，返回 mac</li>
+     *   <li>Cloud 验算 HMAC，不匹配则发送 auth_fail 并断开</li>
+     *   <li>认证通过后，发送 auth_ok 及 Cloud 的公钥/派生公钥</li>
+     * </ol>
+     *
+     * <h3>第二步：转发部分私钥申请</h3>
+     * <ol>
+     *   <li>充电桩发送其部分私钥申请（id + publicKey）</li>
+     *   <li>Cloud 通过 HTTPS 转发给 KGC</li>
+     *   <li>将 KGC 返回的加密部分私钥透传给充电桩</li>
+     * </ol>
+     *
+     * <h3>第三步：验证充电桩的签名 ECDH 请求</h3>
+     * <ol>
+     *   <li>充电桩发送其完整公钥信息和 Schnorr 签名</li>
+     *   <li>Cloud 计算充电桩的完整公钥 PK_pile</li>
+     *   <li>用 {@link ClpCrypto#verify} 验证签名，失败则终止</li>
+     * </ol>
+     *
+     * <h3>第四步：生成签名 ECDH 响应并派生会话密钥</h3>
+     * <ol>
+     *   <li>Cloud 生成临时 ECDH 密钥对 (e_cloud, R_cloud)</li>
+     *   <li>用 Cloud 完整私钥对 ECDH 响应签名</li>
+     *   <li>发送签名后的 ECDH 响应给充电桩</li>
+     *   <li>派生会话密钥 sessionKey = H(shared.x || ra || rb || ida || idb || ta || tb)</li>
+     * </ol>
+     *
+     * @param socket             充电桩的 TCP Socket
+     * @param crypto             密码学操作模块
+     * @param kgcClient          KGC HTTPS 客户端（带证书固定）
+     * @param kgcUrl             KGC 部分私钥 API 地址
+     * @param sharedKey          与充电桩的预共享密钥（用于 HMAC 初始认证）
+     * @param cloudId            Cloud 身份标识
+     * @param cloudPublicKey     Cloud 静态公钥 P_cloud（十六进制 SEC1）
+     * @param cloudDerivedPublic Cloud 派生公钥 Y_cloud（十六进制 SEC1）
+     * @param cloudFullPrivate   Cloud 完整私钥 sk_cloud
+     * @param cloudFullPublic    Cloud 完整公钥 PK_cloud（十六进制 SEC1）
+     * @throws Exception 若任何 IO 或密码学操作失败
+     */
     private static void handleConnection(Socket socket, ClpCrypto crypto, HttpsJsonClient kgcClient, String kgcUrl, byte[] sharedKey,
-                                         String cloudId, String cloudPublicKey, String cloudDerivedPublic,
-                                         BigInteger cloudFullPrivate, String cloudFullPublic) throws Exception {
+                                          String cloudId, String cloudPublicKey, String cloudDerivedPublic,
+                                          BigInteger cloudFullPrivate, String cloudFullPublic) throws Exception {
         BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
         BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
 
@@ -126,6 +222,16 @@ public final class CloudPlatformServer {
         System.out.println("[Cloud] 与充电桩 " + pileId + " 协商完成，会话密钥 = " + sessionKey);
     }
 
+    /**
+     * 通过 TCP Socket 发送一行 JSON 报文（以换行符分隔）。
+     *
+     * <p>将 Map 序列化为 JSON 字符串，写入 BufferedWriter，追加换行符并 flush。
+     * 日志会输出发送的报文内容。</p>
+     *
+     * @param writer 输出写入器
+     * @param body   待发送的键值对 Map
+     * @throws Exception 若写入操作失败
+     */
     private static void send(BufferedWriter writer, Map<String, String> body) throws Exception {
         System.out.println("[Cloud][Socket] 发送报文: " + body);
         writer.write(SimpleJson.stringify(body));
