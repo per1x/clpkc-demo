@@ -7,6 +7,7 @@ import java.util.Arrays;
 public final class Secp256r1 {
     public static final BigInteger P = new BigInteger("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff", 16);
     public static final BigInteger A = new BigInteger("ffffffff00000001000000000000000000000000fffffffffffffffffffffffc", 16);
+    public static final BigInteger B = new BigInteger("5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b", 16);
     public static final BigInteger N = new BigInteger("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", 16);
     public static final Point G = new Point(
         new BigInteger("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", 16),
@@ -22,8 +23,8 @@ public final class Secp256r1 {
     public BigInteger randomScalar() {
         BigInteger r;
         do {
-            r = new BigInteger(256, random).mod(N);
-        } while (r.equals(BigInteger.ZERO));
+            r = new BigInteger(N.bitLength(), random);
+        } while (r.compareTo(BigInteger.ZERO) <= 0 || r.compareTo(N) >= 0);
         return r;
     }
 
@@ -80,7 +81,25 @@ public final class Secp256r1 {
     }
 
     public Point decode(byte[] data) {
-        return new Point(new BigInteger(1, Arrays.copyOfRange(data, 1, 33)), new BigInteger(1, Arrays.copyOfRange(data, 33, 65)), false);
+        if (data.length != 65 || data[0] != 0x04) {
+            throw new IllegalArgumentException("invalid point");
+        }
+        byte[] xb = Arrays.copyOfRange(data, 1, 33);
+        byte[] yb = Arrays.copyOfRange(data, 33, 65);
+        BigInteger x = new BigInteger(1, xb);
+        BigInteger y = new BigInteger(1, yb);
+        if (!isOnCurve(x, y)) {
+            throw new IllegalArgumentException("point not on curve");
+        }
+        return new Point(x, y, false);
+    }
+
+    public boolean isOnCurve(BigInteger x, BigInteger y) {
+        BigInteger x3 = x.modPow(BigInteger.valueOf(3), P);
+        BigInteger ax = A.multiply(x).mod(P);
+        BigInteger rhs = x3.add(ax).add(B).mod(P);
+        BigInteger y2 = y.multiply(y).mod(P);
+        return y2.equals(rhs);
     }
 
     public byte[] toFixed(BigInteger v, int size) {

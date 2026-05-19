@@ -25,8 +25,8 @@ public final class Secp256r1 {
     public BigInteger randomScalar() {
         BigInteger r;
         do {
-            r = new BigInteger(256, random).mod(N);
-        } while (r.equals(BigInteger.ZERO));
+            r = new BigInteger(N.bitLength(), random);
+        } while (r.compareTo(BigInteger.ZERO) <= 0 || r.compareTo(N) >= 0);
         return r;
     }
 
@@ -91,11 +91,24 @@ public final class Secp256r1 {
         }
         byte[] xb = Arrays.copyOfRange(data, 1, 33);
         byte[] yb = Arrays.copyOfRange(data, 33, 65);
-        return new Point(new BigInteger(1, xb), new BigInteger(1, yb), false);
+        BigInteger x = new BigInteger(1, xb);
+        BigInteger y = new BigInteger(1, yb);
+        if (!isOnCurve(x, y)) {
+            throw new IllegalArgumentException("point not on curve");
+        }
+        return new Point(x, y, false);
+    }
+
+    public boolean isOnCurve(BigInteger x, BigInteger y) {
+        BigInteger x3 = x.modPow(BigInteger.valueOf(3), P);
+        BigInteger ax = A.multiply(x).mod(P);
+        BigInteger rhs = x3.add(ax).add(B).mod(P);
+        BigInteger y2 = y.multiply(y).mod(P);
+        return y2.equals(rhs);
     }
 
     public byte[] toFixed(BigInteger v, int size) {
-        byte[] raw = v.mod(N).toByteArray();
+        byte[] raw = v.toByteArray();
         byte[] out = new byte[size];
         int copyStart = raw.length > size ? raw.length - size : 0;
         int copyLen = Math.min(raw.length, size);
