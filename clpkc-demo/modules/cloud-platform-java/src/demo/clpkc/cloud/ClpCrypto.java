@@ -1,7 +1,6 @@
 package demo.clpkc.cloud;
 
 import java.math.BigInteger;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
@@ -20,6 +19,9 @@ public final class ClpCrypto {
     public record KeyMaterial(BigInteger secretScalar, String publicKeyHex) {
     }
 
+    public record FullKey(BigInteger privateScalar, String derivedPublicHex) {
+    }
+
     private final Secp256r1 curve = new Secp256r1();
 
     public KeyMaterial generateStaticKey() {
@@ -27,22 +29,40 @@ public final class ClpCrypto {
         return new KeyMaterial(x, Hexs.encode(curve.encode(curve.multiply(Secp256r1.G, x))));
     }
 
-    public BigInteger composeFullPrivate(BigInteger secret, String partialHex) {
-        return secret.add(new BigInteger(1, Hexs.decode(partialHex))).mod(Secp256r1.N);
+    public BigInteger composeFullPrivate(BigInteger secret, String partialPointHex) {
+        Secp256r1.Point D_i = curve.decode(Hexs.decode(partialPointHex));
+        BigInteger d_i = hashPointToScalar(D_i);
+        return secret.add(d_i).mod(Secp256r1.N);
     }
 
-    public String deriveFullPublic(String id, String publicKeyHex, String masterPublicKeyHex) {
-        BigInteger h = h1(id, publicKeyHex);
-        Secp256r1.Point p = curve.decode(Hexs.decode(publicKeyHex));
-        Secp256r1.Point ppub = curve.decode(Hexs.decode(masterPublicKeyHex));
-        Secp256r1.Point full = curve.add(p, curve.multiply(ppub, h));
-        return Hexs.encode(curve.encode(full));
+    public String deriveFullPublic(String publicKeyHex, String derivedPublicHex) {
+        Secp256r1.Point P_i = curve.decode(Hexs.decode(publicKeyHex));
+        Secp256r1.Point Y_i = curve.decode(Hexs.decode(derivedPublicHex));
+        return Hexs.encode(curve.encode(curve.add(P_i, Y_i)));
+    }
+
+    public FullKey composeFullKey(BigInteger secret, String encryptedPartialHex) {
+        byte[] partialBytes = eciesDecrypt(encryptedPartialHex, secret);
+        Secp256r1.Point D_i = curve.decode(partialBytes);
+        BigInteger d_i = hashPointToScalar(D_i);
+        BigInteger sk_i = secret.add(d_i).mod(Secp256r1.N);
+        Secp256r1.Point Y_i = curve.multiply(Secp256r1.G, d_i);
+        return new FullKey(sk_i, Hexs.encode(curve.encode(Y_i)));
+    }
+
+    public BigInteger hashPointToScalar(Secp256r1.Point p) {
+        byte[] x = curve.toFixed(p.x(), 32);
+        byte[] y = curve.toFixed(p.y(), 32);
+        byte[] combined = new byte[64];
+        System.arraycopy(x, 0, combined, 0, 32);
+        System.arraycopy(y, 0, combined, 32, 32);
+        BigInteger v = new BigInteger(1, sha256(combined)).mod(Secp256r1.N);
+        return v.equals(BigInteger.ZERO) ? BigInteger.ONE : v;
     }
 
     public byte[] eciesDecrypt(String encryptedBlobHex, BigInteger secretScalar) {
         try {
             byte[] blob = Hexs.decode(encryptedBlobHex);
-
             byte[] R_bytes = Arrays.copyOfRange(blob, 0, 65);
             byte[] iv = Arrays.copyOfRange(blob, 65, 77);
             byte[] ciphertextWithTag = Arrays.copyOfRange(blob, 77, blob.length);
@@ -61,12 +81,6 @@ public final class ClpCrypto {
         } catch (Exception e) {
             throw new IllegalStateException("ECIES decryption failed", e);
         }
-    }
-
-    public BigInteger composeFullPrivateDecrypted(BigInteger secret, String encryptedPartialHex) {
-        byte[] partialBytes = eciesDecrypt(encryptedPartialHex, secret);
-        BigInteger partialPrivate = new BigInteger(1, partialBytes);
-        return secret.add(partialPrivate).mod(Secp256r1.N);
     }
 
     public Signature sign(byte[] ra, String id, byte[] wb, String t, BigInteger fullPrivate) {
@@ -89,6 +103,12 @@ public final class ClpCrypto {
         Secp256r1.Point r = curve.decode(rEncoded);
         Secp256r1.Point pk = curve.decode(Hexs.decode(fullPublicHex));
         Secp256r1.Point right = curve.add(r, curve.multiply(pk, e));
+        System.out.println("[DEBUG] verify: fullPublicHex=" + fullPublicHex);
+        System.out.println("[DEBUG] verify: sigHex=" + sigHex);
+        System.out.println("[DEBUG] verify: e=" + e.toString(16));
+        System.out.println("[DEBUG] verify: s=" + s.toString(16));
+        System.out.println("[DEBUG] verify: left=(" + left.x().toString(16) + "," + left.y().toString(16) + ")");
+        System.out.println("[DEBUG] verify: right=(" + right.x().toString(16) + "," + right.y().toString(16) + ")");
         return !left.infinity() && left.x().equals(right.x()) && left.y().equals(right.y());
     }
 
@@ -123,8 +143,40 @@ public final class ClpCrypto {
     }
 
     private BigInteger hashToScalar(byte[]... parts) {
-        BigInteger v = new BigInteger(1, hash(parts)).mod(Secp256r1.N);
-        return v.equals(BigInteger.ZERO) ? BigInteger.ONE : v;
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            for (byte[] part : parts) {
+                md.update(part);
+            }
+            BigInteger v = new BigInteger(1, md.digest()).mod(Secp256r1.N);
+            return v.equals(BigInteger.ZERO) ? BigInteger.ONE : v;
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private byte[] transcript(byte[] ra, String id, byte[] wb, String t) {
+        byte[] idBytes = id.getBytes(StandardCharsets.UTF_8);
+        byte[] tBytes = t.getBytes(StandardCharsets.UTF_8);
+        int total = 2 + ra.length + 2 + idBytes.length + 2 + wb.length + 2 + tBytes.length;
+        byte[] out = new byte[total];
+        int pos = 0;
+        out[pos++] = (byte)(ra.length >> 8);
+        out[pos++] = (byte)(ra.length);
+        System.arraycopy(ra, 0, out, pos, ra.length);
+        pos += ra.length;
+        out[pos++] = (byte)(idBytes.length >> 8);
+        out[pos++] = (byte)(idBytes.length);
+        System.arraycopy(idBytes, 0, out, pos, idBytes.length);
+        pos += idBytes.length;
+        out[pos++] = (byte)(wb.length >> 8);
+        out[pos++] = (byte)(wb.length);
+        System.arraycopy(wb, 0, out, pos, wb.length);
+        pos += wb.length;
+        out[pos++] = (byte)(tBytes.length >> 8);
+        out[pos++] = (byte)(tBytes.length);
+        System.arraycopy(tBytes, 0, out, pos, tBytes.length);
+        return out;
     }
 
     private byte[] hash(byte[]... parts) {
@@ -137,28 +189,5 @@ public final class ClpCrypto {
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
-    }
-
-    private byte[] transcript(byte[] ra, String id, byte[] wb, String t) {
-        return concat(len(ra.length), ra, len(id.getBytes(StandardCharsets.UTF_8).length), id.getBytes(StandardCharsets.UTF_8),
-            len(wb.length), wb, len(t.getBytes(StandardCharsets.UTF_8).length), t.getBytes(StandardCharsets.UTF_8));
-    }
-
-    private byte[] len(int size) {
-        return ByteBuffer.allocate(2).putShort((short) size).array();
-    }
-
-    private byte[] concat(byte[]... items) {
-        int total = 0;
-        for (byte[] item : items) {
-            total += item.length;
-        }
-        byte[] out = new byte[total];
-        int off = 0;
-        for (byte[] item : items) {
-            System.arraycopy(item, 0, out, off, item.length);
-            off += item.length;
-        }
-        return out;
     }
 }

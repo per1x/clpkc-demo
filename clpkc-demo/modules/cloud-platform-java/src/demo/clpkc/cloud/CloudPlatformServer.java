@@ -31,10 +31,12 @@ public final class CloudPlatformServer {
         ownReq.put("id", cloudId);
         ownReq.put("publicKey", cloudStatic.publicKeyHex());
         Map<String, String> ownResp = kgcClient.post(kgcUrl, ownReq);
-        String masterPublicKey = ownResp.get("masterPublicKey");
-        BigInteger cloudFullPrivate = crypto.composeFullPrivateDecrypted(cloudStatic.secretScalar(), ownResp.get("partialPrivate"));
-        String cloudFullPublic = crypto.deriveFullPublic(cloudId, cloudStatic.publicKeyHex(), masterPublicKey);
+        ClpCrypto.FullKey cloudKey = crypto.composeFullKey(cloudStatic.secretScalar(), ownResp.get("partialPrivate"));
+        BigInteger cloudFullPrivate = cloudKey.privateScalar();
+        String cloudDerivedPublic = cloudKey.derivedPublicHex();
+        String cloudFullPublic = crypto.deriveFullPublic(cloudStatic.publicKeyHex(), cloudDerivedPublic);
         System.out.println("[Cloud] 静态公钥 P_i = " + cloudStatic.publicKeyHex());
+        System.out.println("[Cloud] 派生公钥 Y_i = " + cloudDerivedPublic);
         System.out.println("[Cloud] 完整公钥 PK_i = " + cloudFullPublic);
 
         try (ServerSocket serverSocket = new ServerSocket(port)) {
@@ -43,16 +45,17 @@ public final class CloudPlatformServer {
             while (true) {
                 try (Socket socket = serverSocket.accept()) {
                     System.out.println("[Cloud] 收到新的充电桩连接: " + socket.getRemoteSocketAddress());
-                    handleConnection(socket, crypto, kgcClient, kgcUrl, sharedKey, cloudId, cloudStatic.publicKeyHex(),
-                        cloudFullPrivate, cloudFullPublic, masterPublicKey);
+                    handleConnection(socket, crypto, kgcClient, kgcUrl, sharedKey, cloudId,
+                        cloudStatic.publicKeyHex(), cloudDerivedPublic,
+                        cloudFullPrivate, cloudFullPublic);
                 }
             }
         }
     }
 
     private static void handleConnection(Socket socket, ClpCrypto crypto, HttpsJsonClient kgcClient, String kgcUrl, byte[] sharedKey,
-                                         String cloudId, String cloudPublicKey, BigInteger cloudFullPrivate,
-                                         String cloudFullPublic, String masterPublicKey) throws Exception {
+                                         String cloudId, String cloudPublicKey, String cloudDerivedPublic,
+                                         BigInteger cloudFullPrivate, String cloudFullPublic) throws Exception {
         BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
         BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
 
@@ -71,7 +74,7 @@ public final class CloudPlatformServer {
             return;
         }
         System.out.println("[Cloud][Socket] HMAC 校验通过，允许继续申请部分私钥和密钥协商。");
-        send(writer, Map.of("type", "auth_ok", "id", cloudId, "publicKey", cloudPublicKey));
+        send(writer, Map.of("type", "auth_ok", "id", cloudId, "publicKey", cloudPublicKey, "derivedPublic", cloudDerivedPublic));
 
         // 第二步：把充电桩的部分私钥申请通过 HTTPS 转发给 KGC。
         Map<String, String> partialReq = SimpleJson.parse(reader.readLine());
@@ -93,7 +96,8 @@ public final class CloudPlatformServer {
         System.out.println("[Cloud][Socket] 收到密钥协商请求: " + kaReq);
         String pileId = kaReq.get("id");
         String pilePublicKey = kaReq.get("publicKey");
-        String pileFullPublic = crypto.deriveFullPublic(pileId, pilePublicKey, masterPublicKey);
+        String pileDerivedPublic = kaReq.get("derivedPublic");
+        String pileFullPublic = crypto.deriveFullPublic(pilePublicKey, pileDerivedPublic);
         boolean ok = crypto.verify(Hexs.decode(kaReq.get("ra")), pileId, Hexs.decode(cloudPublicKey), kaReq.get("t"), kaReq.get("sig"), pileFullPublic);
         if (!ok) {
             System.out.println("[Cloud][Socket] 充电桩签名校验失败，终止协商。");
@@ -110,6 +114,7 @@ public final class CloudPlatformServer {
         kaResp.put("type", "ka_response");
         kaResp.put("id", cloudId);
         kaResp.put("publicKey", cloudPublicKey);
+        kaResp.put("derivedPublic", cloudDerivedPublic);
         kaResp.put("rb", ephemeral.publicKeyHex());
         kaResp.put("t", tb);
         kaResp.put("sig", sig.toHex());
