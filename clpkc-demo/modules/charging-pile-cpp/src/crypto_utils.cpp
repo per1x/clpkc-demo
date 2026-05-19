@@ -165,13 +165,11 @@ std::string CryptoUtils::ecies_decrypt(const std::string& ciphertext_hex, const 
     PointPtr S(EC_POINT_new(group_), EC_POINT_free);
     EC_POINT_mul(group_, S.get(), nullptr, R.get(), x.get(), ctx_);
 
-    BIGNUM* sx = BN_new();
-    BIGNUM* sy = BN_new();
-    EC_POINT_get_affine_coordinates(group_, S.get(), sx, sy, ctx_);
+    BnPtr sx(BN_new(), BN_free);
+    BnPtr sy(BN_new(), BN_free);
+    EC_POINT_get_affine_coordinates(group_, S.get(), sx.get(), sy.get(), ctx_);
     std::vector<unsigned char> x_coord(32);
-    BN_bn2binpad(sx, x_coord.data(), 32);
-    BN_free(sx);
-    BN_free(sy);
+    BN_bn2binpad(sx.get(), x_coord.data(), 32);
 
     auto key = sha256(x_coord);
 
