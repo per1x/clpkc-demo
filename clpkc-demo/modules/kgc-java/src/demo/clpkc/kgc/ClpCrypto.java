@@ -18,10 +18,6 @@ public final class ClpCrypto {
         this.masterPublic = curve.multiply(Secp256r1.G, masterSecret);
     }
 
-    public BigInteger getMasterSecret() {
-        return masterSecret;
-    }
-
     public String getMasterPublicHex() {
         return Hexs.encode(curve.encode(masterPublic));
     }
