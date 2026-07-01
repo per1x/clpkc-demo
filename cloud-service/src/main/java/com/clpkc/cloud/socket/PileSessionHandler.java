@@ -109,7 +109,7 @@ public final class PileSessionHandler implements Runnable {
 
         // ⑤ 云端临时密钥 + 签名响应
         ClpkcCrypto.KeyMaterial ephemeral = crypto.generateStaticKey();
-        ClpkcCrypto.Signature sig = crypto.sign(Hex.decode(ephemeral.publicKeyHex()),
+        String sig = crypto.sign(Hex.decode(ephemeral.publicKeyHex()),
             identity.id(), Hex.decode(raHex), nonceHex, identity.fullPrivate());
         send(writer, ordered(
             "type", "ka_response",
@@ -117,7 +117,7 @@ public final class PileSessionHandler implements Runnable {
             "publicKey", identity.staticPublicHex(),
             "derivedPublic", identity.derivedPublicHex(),
             "rb", ephemeral.publicKeyHex(),
-            "sig", sig.toHex()));
+            "sig", sig));
 
         // ⑥ 派生会话密钥（不落日志）
         String sessionKey = crypto.deriveSessionKey(ephemeral.secretScalar(),
@@ -126,9 +126,9 @@ public final class PileSessionHandler implements Runnable {
         if (sessionKey.length() != 64) {
             throw new IllegalStateException("session key derivation failed");
         }
-        String fingerprint = Hex.encode(com.clpkc.core.EcCurve.sha256(
+        String fingerprint = Hex.encode(com.clpkc.core.EcCurve.sm3(
             sessionKey.getBytes(StandardCharsets.UTF_8))).substring(0, 16);
-        log.info("[Cloud] 与桩 {} 会话密钥协商完成（指纹 SHA256(SK)[0:16]={}，密钥不落日志）。",
+        log.info("[Cloud] 与桩 {} 会话密钥协商完成（指纹 SM3(SK)[0:16]={}，密钥不落日志）。",
             pileId, fingerprint);
     }
 

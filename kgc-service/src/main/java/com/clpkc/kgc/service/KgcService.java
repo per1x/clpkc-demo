@@ -36,7 +36,7 @@ public class KgcService {
     /** 颁发部分私钥（ECIES 加密）。 */
     public PartialKey issuePartialKey(String id, String publicKeyHex) {
         byte[] partialPoint = crypto.issuePartialPrivate(masterSecret, id, publicKeyHex);
-        String encrypted = crypto.eciesEncrypt(partialPoint, publicKeyHex);
+        String encrypted = crypto.sm2Encrypt(partialPoint, publicKeyHex);
         log.info("[KGC] 已为 id={} 颁发部分私钥（密文长度 {} hex）", id, encrypted.length());
         return new PartialKey(curveName, encrypted, masterPublicHex);
     }

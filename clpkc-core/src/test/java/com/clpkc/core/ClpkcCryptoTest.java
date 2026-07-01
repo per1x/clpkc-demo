@@ -33,8 +33,8 @@ class ClpkcCryptoTest {
         // KGC 为两端颁发部分私钥并 ECIES 加密
         byte[] pilePartial = crypto.issuePartialPrivate(masterSecret, pileId, pile.publicKeyHex());
         byte[] cloudPartial = crypto.issuePartialPrivate(masterSecret, cloudId, cloud.publicKeyHex());
-        String pileEnc = crypto.eciesEncrypt(pilePartial, pile.publicKeyHex());
-        String cloudEnc = crypto.eciesEncrypt(cloudPartial, cloud.publicKeyHex());
+        String pileEnc = crypto.sm2Encrypt(pilePartial, pile.publicKeyHex());
+        String cloudEnc = crypto.sm2Encrypt(cloudPartial, cloud.publicKeyHex());
 
         // 两端组合完整密钥
         ClpkcCrypto.FullKey pileKey = crypto.composeFullKey(pile.secretScalar(), pileEnc);
@@ -50,25 +50,25 @@ class ClpkcCryptoTest {
         String cloudPk = crypto.deriveFullPublic(cloud.publicKeyHex(), cloudKey.derivedPublicHex());
 
         // 握手 nonce（Cloud 下发）
-        String nonce = Hex.encode(EcCurve.sha256("session-nonce".getBytes(StandardCharsets.UTF_8)));
+        String nonce = Hex.encode(EcCurve.sm3("session-nonce".getBytes(StandardCharsets.UTF_8)));
 
         // KA：pile 生成临时对 (a, RA)，对 (RA, pileId, cloudStaticPub, nonce) 签名
         ClpkcCrypto.KeyMaterial ephA = crypto.generateStaticKey();
-        ClpkcCrypto.Signature sigA = crypto.sign(Hex.decode(ephA.publicKeyHex()), pileId,
+        String sigA = crypto.sign(Hex.decode(ephA.publicKeyHex()), pileId,
             Hex.decode(cloud.publicKeyHex()), nonce, pileKey.privateScalar());
         assertTrue(crypto.verify(Hex.decode(ephA.publicKeyHex()), pileId,
-            Hex.decode(cloud.publicKeyHex()), nonce, sigA.toHex(), pilePk));
+            Hex.decode(cloud.publicKeyHex()), nonce, sigA, pilePk));
 
         // Cloud 生成 (b, RB)，对 (RB, cloudId, RA, nonce) 签名
         ClpkcCrypto.KeyMaterial ephB = crypto.generateStaticKey();
-        ClpkcCrypto.Signature sigB = crypto.sign(Hex.decode(ephB.publicKeyHex()), cloudId,
+        String sigB = crypto.sign(Hex.decode(ephB.publicKeyHex()), cloudId,
             Hex.decode(ephA.publicKeyHex()), nonce, cloudKey.privateScalar());
         assertTrue(crypto.verify(Hex.decode(ephB.publicKeyHex()), cloudId,
-            Hex.decode(ephA.publicKeyHex()), nonce, sigB.toHex(), cloudPk));
+            Hex.decode(ephA.publicKeyHex()), nonce, sigB, cloudPk));
 
         // 篡改 nonce 应导致验签失败
         assertFalse(crypto.verify(Hex.decode(ephB.publicKeyHex()), cloudId,
-            Hex.decode(ephA.publicKeyHex()), nonce + "00", sigB.toHex(), cloudPk));
+            Hex.decode(ephA.publicKeyHex()), nonce + "00", sigB, cloudPk));
 
         // 双方独立派生会话密钥应一致
         String skPile = crypto.deriveSessionKey(ephA.secretScalar(), Hex.decode(ephB.publicKeyHex()),

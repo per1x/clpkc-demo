@@ -1,29 +1,28 @@
 package com.clpkc.core;
 
 import java.math.BigInteger;
-import java.security.MessageDigest;
 import java.security.SecureRandom;
 
+import org.bouncycastle.asn1.gm.GMNamedCurves;
 import org.bouncycastle.asn1.x9.X9ECParameters;
-import org.bouncycastle.crypto.ec.CustomNamedCurves;
+import org.bouncycastle.crypto.digests.SM3Digest;
 import org.bouncycastle.math.ec.ECCurve;
 import org.bouncycastle.math.ec.ECPoint;
 
 /**
- * secp256r1 (NIST P-256) 曲线运算封装。
+ * 国密 SM2 曲线（sm2p256v1）运算封装。
  *
- * <p>底层改用 <b>BouncyCastle</b> 的经过验证的椭圆曲线实现，替换原 Demo 中
- * 手写、非恒定时间的 {@code Secp256r1}。所有对外暴露的编码/运算都保持与 C++
- * OpenSSL 侧（充电桩）字节级一致：</p>
+ * <p>由原 secp256r1 + SHA-256 整体切换到国密 <b>SM2 曲线 + SM3 哈希</b>，底层仍用
+ * BouncyCastle 的经过验证的实现。对外编码保持与 C++ OpenSSL 侧字节级一致：</p>
  * <ul>
  *   <li>点编码：SEC1 非压缩 {@code 0x04 || X(32) || Y(32)}，共 65 字节。</li>
- *   <li>标量编码：32 字节无符号大端。</li>
- *   <li>点解码：{@link ECCurve#decodePoint} 会校验点在曲线上，抵御无效曲线攻击。</li>
+ *   <li>标量/坐标：32 字节无符号大端。</li>
+ *   <li>点解码：{@link ECCurve#decodePoint} 校验点在曲线上，抵御无效曲线攻击。</li>
  * </ul>
  */
 public final class EcCurve {
 
-    private static final X9ECParameters PARAMS = CustomNamedCurves.getByName("secp256r1");
+    private static final X9ECParameters PARAMS = GMNamedCurves.getByName("sm2p256v1");
 
     /** 曲线定义。 */
     public static final ECCurve CURVE = PARAMS.getCurve();
@@ -48,9 +47,11 @@ public final class EcCurve {
         this.random = random;
     }
 
-    /**
-     * 生成 [1, N-1] 内均匀分布的随机标量（rejection sampling）。
-     */
+    public SecureRandom random() {
+        return random;
+    }
+
+    /** 生成 [1, N-1] 内均匀分布的随机标量（rejection sampling）。 */
     public BigInteger randomScalar() {
         BigInteger k;
         do {
@@ -100,9 +101,7 @@ public final class EcCurve {
         return toFixed(p.normalize().getAffineXCoord().toBigInteger(), SCALAR_LEN);
     }
 
-    /**
-     * BigInteger → 固定长度无符号大端字节数组（左补零 / 截低位）。
-     */
+    /** BigInteger → 固定长度无符号大端字节数组（左补零 / 截低位）。 */
     public byte[] toFixed(BigInteger v, int size) {
         byte[] raw = v.toByteArray();
         byte[] out = new byte[size];
@@ -113,34 +112,29 @@ public final class EcCurve {
     }
 
     /**
-     * H1 哈希到曲线（try-and-increment）。
+     * H1 哈希到曲线（try-and-increment，SM3）。
      *
-     * <p>仅 KGC 侧使用（用于 {@code Q_i = H1(ID || P_i)}），充电桩不参与该运算，
-     * 因此无需跨语言互操作；此处保持与原协议文档一致的确定性算法：</p>
-     * <ol>
-     *   <li>{@code digest = SHA256(parts... || counter_be32)}，counter 从 0 起；</li>
-     *   <li>{@code x = digest mod P}；</li>
-     *   <li>解 {@code y² = x³ + ax + b}，用 {@code y = rhs^((P+1)/4) mod P}；</li>
-     *   <li>按 digest 末字节 LSB 选择 y 的奇偶。</li>
-     * </ol>
+     * <p>仅 KGC 侧使用（{@code Q_i = H1(ID || P_i)}），充电桩不参与，无需跨语言互操作。</p>
      *
      * @throws IllegalStateException 256 次尝试仍未命中曲线
      */
     public ECPoint hashToCurve(byte[]... parts) {
-        MessageDigest md = sha256Digest();
         BigInteger a = CURVE.getA().toBigInteger();
         BigInteger b = CURVE.getB().toBigInteger();
         BigInteger sqrtExp = P.add(BigInteger.ONE).divide(BigInteger.valueOf(4));
         for (int counter = 0; counter < 256; counter++) {
-            MessageDigest mdc = cloneDigest(md);
+            SM3Digest md = new SM3Digest();
             for (byte[] part : parts) {
-                mdc.update(part);
+                md.update(part, 0, part.length);
             }
-            mdc.update(new byte[]{
+            byte[] ctr = {
                 (byte) (counter >>> 24), (byte) (counter >>> 16),
                 (byte) (counter >>> 8), (byte) counter
-            });
-            byte[] digest = mdc.digest();
+            };
+            md.update(ctr, 0, ctr.length);
+            byte[] digest = new byte[md.getDigestSize()];
+            md.doFinal(digest, 0);
+
             BigInteger x = new BigInteger(1, digest).mod(P);
             if (x.signum() == 0) {
                 continue;
@@ -165,24 +159,12 @@ public final class EcCurve {
         throw new IllegalStateException("hashToCurve: failed after 256 attempts");
     }
 
-    /** SHA-256 便捷方法。 */
-    public static byte[] sha256(byte[] data) {
-        return sha256Digest().digest(data);
-    }
-
-    private static MessageDigest sha256Digest() {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (Exception e) {
-            throw new IllegalStateException("SHA-256 unavailable", e);
-        }
-    }
-
-    private static MessageDigest cloneDigest(MessageDigest md) {
-        try {
-            return (MessageDigest) md.clone();
-        } catch (CloneNotSupportedException e) {
-            return sha256Digest();
-        }
+    /** SM3 哈希。 */
+    public static byte[] sm3(byte[] data) {
+        SM3Digest md = new SM3Digest();
+        md.update(data, 0, data.length);
+        byte[] out = new byte[md.getDigestSize()];
+        md.doFinal(out, 0);
+        return out;
     }
 }

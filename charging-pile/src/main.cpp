@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
             {"type", "hmac"},
             {"id", cfg.pile_id},
             {"publicKey", static_key.public_hex},
-            {"mac", crypto.hmac_sha256_hex(cfg.shared_key_hex, nonce)}
+            {"mac", crypto.hmac_sm3_hex(cfg.shared_key_hex, nonce)}
         });
 
         json auth = read_msg(net);
@@ -80,21 +80,21 @@ int main(int argc, char** argv) {
             {"publicKey", static_key.public_hex}
         });
         json partial = read_msg(net);
-        std::string decrypted = crypto.ecies_decrypt(field(partial, "partialPrivate"), static_key.secret_hex);
+        std::string decrypted = crypto.sm2_decrypt(field(partial, "partialPrivate"), static_key.secret_hex);
         std::string derived_public = crypto.compute_derived_public(decrypted);
         std::string full_private = crypto.compose_full_private(static_key.secret_hex, decrypted);
         LOG_INFO("已组合完整私钥，派生公钥 Y_i = " + derived_public);
 
         // ③ 发起带签名的 KA（transcript 绑定 nonce）
         KeyMaterial eph = crypto.generate_static_key();
-        Signature sig = crypto.sign_transcript(eph.public_hex, cfg.pile_id, cloud_static_public, nonce, full_private);
+        std::string sig = crypto.sign_transcript(eph.public_hex, cfg.pile_id, cloud_static_public, nonce, full_private);
         send_msg(net, json{
             {"type", "ka_request"},
             {"id", cfg.pile_id},
             {"publicKey", static_key.public_hex},
             {"derivedPublic", derived_public},
             {"ra", eph.public_hex},
-            {"sig", sig.to_hex()}
+            {"sig", sig}
         });
 
         // ④ 校验云平台响应并派生会话密钥
@@ -117,8 +117,8 @@ int main(int argc, char** argv) {
             LOG_ERROR("会话密钥派生异常。");
             return 1;
         }
-        std::string fingerprint = crypto.sha256_hex_of_ascii(session_key).substr(0, 16);
-        LOG_INFO("会话密钥协商完成（指纹 SHA256(SK)[0:16]=" + fingerprint + "，密钥不落日志）。");
+        std::string fingerprint = crypto.sm3_hex_of_ascii(session_key).substr(0, 16);
+        LOG_INFO("会话密钥协商完成（指纹 SM3(SK)[0:16]=" + fingerprint + "，密钥不落日志）。");
         return 0;
     } catch (const std::exception& e) {
         LOG_ERROR(std::string("充电桩运行异常: ") + e.what());
