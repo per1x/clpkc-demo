@@ -11,8 +11,8 @@ struct PileConfig {
     std::string pile_id = "pile-001";
     std::string cloud_host = "127.0.0.1";
     int cloud_port = 9000;
-    // 与云平台的全局预共享密钥（HMAC），64 字符 hex
-    std::string shared_key_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    // 与云平台的全局预共享密钥（HMAC），16 字节 SM4 密钥，32 字符 hex
+    std::string shared_key_hex = "00112233445566778899aabbccddeeff";
     int connect_timeout_ms = 3000;
     int read_timeout_ms = 15000;
 

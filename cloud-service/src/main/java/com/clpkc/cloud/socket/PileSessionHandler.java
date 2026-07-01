@@ -14,9 +14,10 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.clpkc.cloud.crypto.ClpkcCrypto;
+import com.clpkc.cloud.crypto.EcCurve;
+import com.clpkc.cloud.crypto.Hex;
 import com.clpkc.cloud.service.CloudIdentity;
-import com.clpkc.core.ClpkcCrypto;
-import com.clpkc.core.util.Hex;
 
 /**
  * 处理单个充电桩长连接的握手流程（无时间戳，仅用 nonce 防重放）。
@@ -81,26 +82,26 @@ public final class PileSessionHandler implements Runnable {
         send(writer, ordered(
             "type", "auth_ok",
             "id", identity.id(),
-            "publicKey", identity.staticPublicHex(),
-            "derivedPublic", identity.derivedPublicHex()));
+            "claimedPublic", identity.claimedPublicHex()));
 
-        // ③ 转发部分私钥申请到 KGC
+        // ③ 转发部分私钥申请到 KGC（隐式证书：返回声明公钥 WA + SM2 加密的 tA + 主公钥）
         Map<String, String> partialReq = JsonCodec.parse(readLine(in));
         Map<String, String> kgcResp = identity.forwardPartialKey(
             required(partialReq, "id"), required(partialReq, "publicKey"));
         send(writer, ordered(
             "type", "partial_key_response",
             "curve", kgcResp.get("curve"),
+            "claimedPublic", kgcResp.get("claimedPublic"),
             "partialPrivate", kgcResp.get("partialPrivate"),
             "masterPublicKey", kgcResp.get("masterPublicKey")));
 
-        // ④ 验签 KA 请求
+        // ④ 验签 KA 请求：用桩的声明公钥 WA 重构完整公钥 PA = WA + λ·Ppub
         Map<String, String> kaReq = JsonCodec.parse(readLine(in));
         String raHex = required(kaReq, "ra");
-        String pileFullPublic = crypto.deriveFullPublic(
-            required(kaReq, "publicKey"), required(kaReq, "derivedPublic"));
+        String pileFullPublic = crypto.reconstructFullPublicHex(
+            required(kaReq, "id"), required(kaReq, "claimedPublic"), identity.masterPublicHex());
         boolean ok = crypto.verify(Hex.decode(raHex), required(kaReq, "id"),
-            Hex.decode(identity.staticPublicHex()), nonceHex, required(kaReq, "sig"), pileFullPublic);
+            Hex.decode(identity.claimedPublicHex()), nonceHex, required(kaReq, "sig"), pileFullPublic);
         if (!ok) {
             log.warn("[Cloud][Socket] {} 桩端 KA 签名校验失败。", peer);
             send(writer, Map.of("type", "ka_fail"));
@@ -114,19 +115,18 @@ public final class PileSessionHandler implements Runnable {
         send(writer, ordered(
             "type", "ka_response",
             "id", identity.id(),
-            "publicKey", identity.staticPublicHex(),
-            "derivedPublic", identity.derivedPublicHex(),
+            "claimedPublic", identity.claimedPublicHex(),
             "rb", ephemeral.publicKeyHex(),
             "sig", sig));
 
         // ⑥ 派生会话密钥（不落日志）
         String sessionKey = crypto.deriveSessionKey(ephemeral.secretScalar(),
-            Hex.decode(raHex), Hex.decode(raHex), Hex.decode(ephemeral.publicKeyHex()),
+            raHex, Hex.decode(raHex), Hex.decode(ephemeral.publicKeyHex()),
             required(kaReq, "id"), identity.id(), nonceHex);
         if (sessionKey.length() != 64) {
             throw new IllegalStateException("session key derivation failed");
         }
-        String fingerprint = Hex.encode(com.clpkc.core.EcCurve.sm3(
+        String fingerprint = Hex.encode(EcCurve.sm3(
             sessionKey.getBytes(StandardCharsets.UTF_8))).substring(0, 16);
         log.info("[Cloud] 与桩 {} 会话密钥协商完成（指纹 SM3(SK)[0:16]={}，密钥不落日志）。",
             pileId, fingerprint);

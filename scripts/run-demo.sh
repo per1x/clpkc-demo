@@ -8,8 +8,8 @@ RUN_DIR="${RUN_DIR:-/tmp/clpkc-run}"
 JAVA="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}/bin/java"
 mkdir -p "$RUN_DIR"
 
-KGC_JAR="$ROOT/kgc-service/target/kgc-service-1.0.0.jar"
-CLOUD_JAR="$ROOT/cloud-service/target/cloud-service-1.0.0.jar"
+KGC_JAR="$ROOT/kgc-service/target/kgc-service.jar"
+CLOUD_JAR="$ROOT/cloud-service/target/cloud-service.jar"
 PILE_BIN="$ROOT/charging-pile/build/charging_pile"
 
 KGC_PID=""; CLOUD_PID=""

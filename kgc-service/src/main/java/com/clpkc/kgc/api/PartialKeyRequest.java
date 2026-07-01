@@ -4,17 +4,35 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 
 /**
- * 部分私钥申请入参。
+ * 部分私钥申请入参（JavaBean，供 Jackson 反序列化 + 校验）。
  *
- * @param id        申请方标识（设备/平台）
- * @param publicKey 申请方静态公钥 P_i，SEC1 非压缩十六进制（130 字符，0x04 前缀）
+ * <ul>
+ *   <li>{@code id}：申请方标识（设备/平台）。</li>
+ *   <li>{@code publicKey}：申请方本地公钥 UA，128 hex（x‖y，无 04 前缀）。</li>
+ * </ul>
  */
-public record PartialKeyRequest(
+public class PartialKeyRequest {
+
     @NotBlank(message = "id 不能为空")
-    String id,
+    private String id;
 
     @NotBlank(message = "publicKey 不能为空")
-    @Pattern(regexp = "^04[0-9a-fA-F]{128}$", message = "publicKey 必须为 SEC1 非压缩十六进制（130 字符）")
-    String publicKey
-) {
+    @Pattern(regexp = "^[0-9a-fA-F]{128}$", message = "publicKey 必须为 128 hex（x‖y 坐标）")
+    private String publicKey;
+
+    public String getId() {
+        return id;
+    }
+
+    public void setId(String id) {
+        this.id = id;
+    }
+
+    public String getPublicKey() {
+        return publicKey;
+    }
+
+    public void setPublicKey(String publicKey) {
+        this.publicKey = publicKey;
+    }
 }

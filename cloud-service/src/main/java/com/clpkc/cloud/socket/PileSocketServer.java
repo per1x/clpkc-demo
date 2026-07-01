@@ -10,24 +10,27 @@ import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
-import com.clpkc.cloud.config.CloudProperties;
 import com.clpkc.cloud.service.CloudIdentity;
 
 /**
  * 对充电桩的 TCP 长连接 Socket 服务端。
  *
  * <p>相对原 Demo 的生产化改造：由单线程串行 accept 改为<b>固定线程池并发</b>处理多桩连接；
- * 随 Spring 生命周期启动/优雅关闭；每连接设读超时与单行长度上限。</p>
+ * 随 Spring 生命周期启动/优雅关闭；每连接设读超时与单行长度上限。配置用 {@code @Value} 读取。</p>
  */
 @Component
 public class PileSocketServer implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(PileSocketServer.class);
 
-    private final CloudProperties.Socket cfg;
+    private final int port;
+    private final int backlog;
+    private final int readTimeoutMs;
+    private final int maxThreads;
     private final CloudIdentity identity;
 
     private volatile boolean running;
@@ -35,8 +38,15 @@ public class PileSocketServer implements SmartLifecycle {
     private ExecutorService acceptExecutor;
     private ThreadPoolExecutor workerPool;
 
-    public PileSocketServer(CloudProperties props, CloudIdentity identity) {
-        this.cfg = props.socket();
+    public PileSocketServer(@Value("${clpkc.cloud.socket.port:9000}") int port,
+                            @Value("${clpkc.cloud.socket.backlog:128}") int backlog,
+                            @Value("${clpkc.cloud.socket.read-timeout-ms:15000}") int readTimeoutMs,
+                            @Value("${clpkc.cloud.socket.max-threads:64}") int maxThreads,
+                            CloudIdentity identity) {
+        this.port = port;
+        this.backlog = backlog;
+        this.readTimeoutMs = readTimeoutMs;
+        this.maxThreads = maxThreads;
         this.identity = identity;
     }
 
@@ -45,14 +55,13 @@ public class PileSocketServer implements SmartLifecycle {
         try {
             serverSocket = new ServerSocket();
             serverSocket.setReuseAddress(true);
-            serverSocket.bind(new InetSocketAddress(cfg.port()), cfg.backlog());
-            workerPool = (ThreadPoolExecutor) Executors.newFixedThreadPool(cfg.maxThreads(),
+            serverSocket.bind(new InetSocketAddress(port), backlog);
+            workerPool = (ThreadPoolExecutor) Executors.newFixedThreadPool(maxThreads,
                 namedThreads("pile-worker-"));
             acceptExecutor = Executors.newSingleThreadExecutor(namedThreads("pile-accept-"));
             running = true;
             acceptExecutor.submit(this::acceptLoop);
-            log.info("[Cloud] TCP Socket 服务已启动: tcp://0.0.0.0:{}（线程池 {}）",
-                cfg.port(), cfg.maxThreads());
+            log.info("[Cloud] TCP Socket 服务已启动: tcp://0.0.0.0:{}（线程池 {}）", port, maxThreads);
         } catch (Exception e) {
             throw new IllegalStateException("启动 Socket 服务端失败: " + e.getMessage(), e);
         }
@@ -62,7 +71,7 @@ public class PileSocketServer implements SmartLifecycle {
         while (running) {
             try {
                 Socket socket = serverSocket.accept();
-                workerPool.submit(new PileSessionHandler(socket, identity, cfg.readTimeoutMs()));
+                workerPool.submit(new PileSessionHandler(socket, identity, readTimeoutMs));
             } catch (Exception e) {
                 if (running) {
                     log.warn("[Cloud] accept 异常: {}", e.getMessage());

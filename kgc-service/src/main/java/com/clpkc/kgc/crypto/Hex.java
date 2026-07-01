@@ -1,10 +1,7 @@
-package com.clpkc.core.util;
+package com.clpkc.kgc.crypto;
 
 /**
- * 十六进制编解码工具。
- *
- * <p>统一输出小写十六进制，与 C++ 充电桩侧 {@code bytes_to_hex} 保持一致，
- * 保证跨实现的字符串比较可直接进行。</p>
+ * 十六进制编解码工具（小写输出，与 C++ 桩端一致）。
  */
 public final class Hex {
 
@@ -13,12 +10,6 @@ public final class Hex {
     private Hex() {
     }
 
-    /**
-     * 将字节数组编码为小写十六进制字符串。
-     *
-     * @param data 原始字节
-     * @return 长度为 {@code 2 * data.length} 的小写十六进制字符串
-     */
     public static String encode(byte[] data) {
         char[] out = new char[data.length * 2];
         for (int i = 0; i < data.length; i++) {
@@ -29,13 +20,6 @@ public final class Hex {
         return new String(out);
     }
 
-    /**
-     * 将十六进制字符串解码为字节数组。
-     *
-     * @param hex 十六进制字符串（大小写均可，长度必须为偶数）
-     * @return 解码后的字节数组
-     * @throws IllegalArgumentException 长度为奇数或含非法字符
-     */
     public static byte[] decode(String hex) {
         int len = hex.length();
         if ((len & 1) != 0) {

@@ -17,16 +17,17 @@
 
 | 目录 | 说明 |
 |------|------|
-| `clpkc-core/` | 共享密码学库。**国密 SM2 曲线 + SM3**（BouncyCastle）；CL-PKC 协议原语（H1/H2、点式部分私钥、SM2 加密、SM2 签名、会话密钥、HMAC-SM3）。KGC 与云平台共用，保证算法一致。 |
-| `kgc-service/` | KGC HTTP 服务（Spring Boot 3 / JDK 17）。 |
-| `cloud-service/` | 云平台（Spring Boot 3 / JDK 17）。 |
+| `kgc-service/` | KGC HTTP 服务（Spring Boot 3 / JDK 17，**独立 Maven 工程**）。密码学在自己的 `com.clpkc.kgc.crypto` 包内。 |
+| `cloud-service/` | 云平台（Spring Boot 3 / JDK 17，**独立 Maven 工程**）。密码学在自己的 `com.clpkc.cloud.crypto` 包内（与 KGC 各一份）。 |
 | `charging-pile/` | 充电桩 C++ 客户端（CMake / OpenSSL）。 |
 | `scripts/` | 构建与联调脚本。 |
 | `legacy-demo/` | 原始 Demo 存档。 |
 
+> 密码学库（`Hex`/`EcCurve`/`ClpkcCrypto`）**不做共享模块，各服务各自持有一份**；每个服务是独立工程，可单独 `mvn -f <service>/pom.xml package`。国密 SM2+SM3（BouncyCastle），隐式证书方案（`WA`/`λ`/`tA`、`dA=tA+ua`、`PA=WA+λ·Ppub`）。
+
 ## 相对原 Demo 的主要改造
 
-- **国密算法**：整体切换到 **SM2（曲线/签名/公钥加密）+ SM3（哈希）+ HMAC-SM3**；删除手写、非恒定时间的曲线实现，Java 用 BouncyCastle、C++ 用 OpenSSL（P0-2 / P1-8）。SM2 密文与签名统一 ASN.1 DER，保证 Java↔C++ 互通。
+- **国密算法 + 隐式证书方案**：切换到 **SM2 + SM3 + HMAC-SM3**，无证书部分采用**隐式证书（ECQV/SM2 风格）**——与现网 KGC 对齐：KGC 出 `WA=wG+UA`、`tA=(w+λ·ms) mod n`，设备合成 `dA=tA+ua`，验证方用 `PA=WA+λ·Ppub` **重构公钥、无需预存**。Java 用 BouncyCastle、C++ 用 OpenSSL；SM2 密文 = C1C3C2 原始拼接（桩端手动解密），SM2 签名 = DER，均已跨实现互通验证（P0-2 / P1-8）。
 - **KGC 主密钥**：不再每次启动随机生成，改为从配置注入（P0-4）。
 - **预共享密钥**：从源码硬编码改为外置配置（全局常量，P0-5）。
 - **防重放**：去除时间戳，签名 transcript 与会话密钥改用握手 **nonce** 绑定（P1-6）。
@@ -34,7 +35,7 @@
 - **IO 健壮性**：桩端逐字节 read 改为缓冲读 + 超时 + 单行长度上限（P2-11）。
 - **日志脱敏**：私钥/会话密钥不落日志，仅输出单向指纹 `SM3(SK)[0:16]`（P2-12）。
 - **JSON/错误处理**：Java 用 Jackson + 参数校验 + 全局异常；C++ 用 nlohmann/json（P2-13）。
-- **配置外置**：端口、地址、密钥全部外置到 `application.yml` / `pile.conf`（P2-14）。
+- **配置外置**：端口、地址、密钥全部外置到 `application.properties` / `pile.conf`（P2-14）。
 
 > 暂不做：Pile↔Cloud 的 TLS（交给 NGINX）、KGC 调用方鉴权、身份绑定强校验、证书吊销、会话密钥之上的应用数据加密通道。
 
@@ -55,17 +56,17 @@ bash ./scripts/run-demo.sh    # 启动 KGC + 云平台并运行一次充电桩�
 
 ## 关键配置
 
-KGC（`kgc-service/src/main/resources/application.yml`）：
+KGC（`kgc-service/src/main/resources/application.properties`）：
 
 | 配置 / 环境变量 | 说明 |
 |---|---|
 | `clpkc.kgc.master-secret-hex` / `CLPKC_KGC_MASTER_SECRET_HEX` | 主私钥 s（64 hex）。生产必须外置覆盖。 |
 
-云平台（`cloud-service/src/main/resources/application.yml`）：
+云平台（`cloud-service/src/main/resources/application.properties`）：
 
 | 配置 / 环境变量 | 说明 |
 |---|---|
-| `clpkc.cloud.shared-key-hex` / `CLPKC_CLOUD_SHARED_KEY_HEX` | 与桩的全局预共享密钥。 |
+| `clpkc.cloud.shared-key-hex` / `CLPKC_CLOUD_SHARED_KEY_HEX` | 与桩的全局预共享密钥（16 字节 SM4 密钥，32 hex）。 |
 | `clpkc.cloud.static-secret-hex` / `CLPKC_CLOUD_STATIC_SECRET_HEX` | 云平台静态私钥（留空则随机）。 |
 | `clpkc.cloud.socket.port` | 对桩 Socket 端口（默认 9000）。 |
 | `clpkc.cloud.kgc.base-url` / `CLPKC_KGC_BASE_URL` | KGC 地址。 |
@@ -78,7 +79,10 @@ KGC（`kgc-service/src/main/resources/application.yml`）：
 沿用原消息流（`challenge → hmac → auth_ok → partial_key_request → partial_key_response → ka_request → ka_response`），
 但 **KA 报文去除 `t` 时间戳字段**，签名 transcript 与会话密钥改绑握手 `nonce`：
 
+- 身份摘要 `HA = SM3(len2B(id) ‖ id ‖ a ‖ b ‖ Gx ‖ Gy ‖ Ppub.x ‖ Ppub.y)`；`λ = SM3(WA.x ‖ WA.y ‖ HA)`
+- 完整密钥 `dA = (tA + ua) mod n`，`PA = WA + λ·Ppub`（验证方重构，无需预存公钥）
 - SM2 签名消息 transcript = `len‖(ra) ‖ len‖(id) ‖ len‖(wb) ‖ len‖(nonce)`（2 字节大端长度前缀）
 - 会话密钥 `SK = SM3(x(ECDH) ‖ RA ‖ RB ‖ ID_A ‖ ID_B ‖ nonce)`
+- 点线上编码 `x(32)‖y(32)`（128 hex，无 04 前缀）；配置文件为 `.properties` 格式
 
 详见 [`legacy-demo/clpkc-demo/docs/CLPKC_PROTOCOL.md`](legacy-demo/clpkc-demo/docs/CLPKC_PROTOCOL.md)（时间戳相关部分以本节为准）。

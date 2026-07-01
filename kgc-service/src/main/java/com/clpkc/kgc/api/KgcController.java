@@ -33,7 +33,7 @@ public class KgcController {
 
     @PostMapping("/partial-key")
     public KgcService.PartialKey partialKey(@Valid @RequestBody PartialKeyRequest req) {
-        return kgcService.issuePartialKey(req.id(), req.publicKey());
+        return kgcService.issuePartialKey(req.getId(), req.getPublicKey());
     }
 
     @GetMapping("/system-params")
