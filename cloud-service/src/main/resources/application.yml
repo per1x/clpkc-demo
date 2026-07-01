@@ -1,0 +1,29 @@
+server:
+  port: 8081            # 云平台自身的管理 HTTP 端口（健康检查等；对桩用的是下方 socket 端口）
+  shutdown: graceful
+
+spring:
+  application:
+    name: cloud-service
+
+clpkc:
+  cloud:
+    id: cloud-001
+    # 云平台静态私钥（留空则随机生成并告警；生产环境固定）
+    static-secret-hex: ${CLPKC_CLOUD_STATIC_SECRET_HEX:}
+    # 与充电桩的全局预共享密钥（HMAC 认证）。生产环境请通过环境变量覆盖。
+    shared-key-hex: ${CLPKC_CLOUD_SHARED_KEY_HEX:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff}
+    socket:
+      port: 9000
+      backlog: 128
+      read-timeout-ms: 15000
+      max-threads: 64
+    kgc:
+      base-url: ${CLPKC_KGC_BASE_URL:http://127.0.0.1:8443}
+      connect-timeout-ms: 3000
+      read-timeout-ms: 5000
+
+logging:
+  level:
+    root: INFO
+    com.clpkc: INFO
