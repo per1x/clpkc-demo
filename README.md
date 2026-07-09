@@ -76,8 +76,12 @@ KGC（`kgc-service/src/main/resources/application.properties`）：
 
 ## 协议要点（改造后）
 
-沿用原消息流（`challenge → hmac → auth_ok → partial_key_request → partial_key_response → ka_request → ka_response`），
-但 **KA 报文去除 `t` 时间戳字段**，签名 transcript 与会话密钥改绑握手 `nonce`：
+**两阶段拆分**：云平台每次连接都先下发 `challenge(nonce, cloudId, WA_cloud)`（nonce 为本次会话新鲜随机数，绑定签名防重放，两阶段都需要），随后按桩发来的报文类型分流：
+
+- **第一阶段（仅首次，provision）**：桩发 `hmac` → HMAC-SM3 认证 → `partial_key_request` → 云平台转发 KGC → `partial_key_response(claimedPublic WA, partialPrivate, masterPublicKey)`。桩组合 `dA` 后**本地持久化**（`pile-keystore.json`）。
+- **第二阶段（每次会话，session）**：桩加载本地密钥，直接发 `ka_request(claimedPublic, ra, sig)` → 云平台核对桩编号(见 `PileDirectory`)、重构 `PA` 验签 → `ka_response` → 双方派生会话密钥。**不再走 HMAC、不再申请 KGC。**
+
+密码学细节：
 
 - 身份摘要 `HA = SM3(len2B(id) ‖ id ‖ a ‖ b ‖ Gx ‖ Gy ‖ Ppub.x ‖ Ppub.y)`；`λ = SM3(WA.x ‖ WA.y ‖ HA)`
 - 完整密钥 `dA = (tA + ua) mod n`，`PA = WA + λ·Ppub`（验证方重构，无需预存公钥）

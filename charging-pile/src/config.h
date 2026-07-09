@@ -15,6 +15,8 @@ struct PileConfig {
     std::string shared_key_hex = "00112233445566778899aabbccddeeff";
     int connect_timeout_ms = 3000;
     int read_timeout_ms = 15000;
+    // 本地密钥持久化文件：存在则跳过第一阶段直接协商会话密钥
+    std::string keystore_path = "pile-keystore.json";
 
     // 从配置文件（key=value，# 注释）加载，随后用环境变量覆盖。
     // 找不到文件时仅使用默认值 + 环境变量，不视为错误。

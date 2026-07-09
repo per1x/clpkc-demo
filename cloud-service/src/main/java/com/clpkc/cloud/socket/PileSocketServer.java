@@ -15,6 +15,7 @@ import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
 import com.clpkc.cloud.service.CloudIdentity;
+import com.clpkc.cloud.service.PileDirectory;
 
 /**
  * 对充电桩的 TCP 长连接 Socket 服务端。
@@ -32,6 +33,7 @@ public class PileSocketServer implements SmartLifecycle {
     private final int readTimeoutMs;
     private final int maxThreads;
     private final CloudIdentity identity;
+    private final PileDirectory pileDirectory;
 
     private volatile boolean running;
     private ServerSocket serverSocket;
@@ -42,12 +44,14 @@ public class PileSocketServer implements SmartLifecycle {
                             @Value("${clpkc.cloud.socket.backlog:128}") int backlog,
                             @Value("${clpkc.cloud.socket.read-timeout-ms:15000}") int readTimeoutMs,
                             @Value("${clpkc.cloud.socket.max-threads:64}") int maxThreads,
-                            CloudIdentity identity) {
+                            CloudIdentity identity,
+                            PileDirectory pileDirectory) {
         this.port = port;
         this.backlog = backlog;
         this.readTimeoutMs = readTimeoutMs;
         this.maxThreads = maxThreads;
         this.identity = identity;
+        this.pileDirectory = pileDirectory;
     }
 
     @Override
@@ -71,7 +75,7 @@ public class PileSocketServer implements SmartLifecycle {
         while (running) {
             try {
                 Socket socket = serverSocket.accept();
-                workerPool.submit(new PileSessionHandler(socket, identity, readTimeoutMs));
+                workerPool.submit(new PileSessionHandler(socket, identity, pileDirectory, readTimeoutMs));
             } catch (Exception e) {
                 if (running) {
                     log.warn("[Cloud] accept 异常: {}", e.getMessage());

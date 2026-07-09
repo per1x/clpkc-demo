@@ -192,10 +192,31 @@ public final class ClpkcCrypto {
                                    byte[] ra, byte[] rb, String idA, String idB, String nonce) {
         ECPoint shared = curve.multiply(curve.pointFromHex(peerPointHex), ephemeralScalar);
         byte[] sharedX = curve.toFixed(shared.normalize().getAffineXCoord().toBigInteger(), EcCurve.SCALAR_LEN);
-        byte[] digest = EcCurve.sm3(concat(sharedX, ra, rb,
-            idA.getBytes(StandardCharsets.UTF_8), idB.getBytes(StandardCharsets.UTF_8),
-            nonce.getBytes(StandardCharsets.UTF_8)));
-        return Hex.encode(digest);
+        // Z = len‖Sx ‖ len‖RA ‖ len‖RB ‖ len‖ID_A ‖ len‖ID_B ‖ len‖nonce（2 字节大端长度前缀，消除拼接歧义）
+        ByteArrayOutputStream z = new ByteArrayOutputStream();
+        appendField(z, sharedX);
+        appendField(z, ra);
+        appendField(z, rb);
+        appendField(z, idA.getBytes(StandardCharsets.UTF_8));
+        appendField(z, idB.getBytes(StandardCharsets.UTF_8));
+        appendField(z, nonce.getBytes(StandardCharsets.UTF_8));
+        return Hex.encode(sm3Kdf(z.toByteArray(), EcCurve.SCALAR_LEN));
+    }
+
+    /** GB/T 32918.3 KDF（SM3 计数器模式）：ct 从 0x00000001 起，Ha=SM3(Z‖ct_be32)，拼接取前 klen 字节。 */
+    private byte[] sm3Kdf(byte[] z, int klen) {
+        byte[] out = new byte[klen];
+        int off = 0;
+        int ct = 1;
+        while (off < klen) {
+            byte[] ctBe = {(byte) (ct >>> 24), (byte) (ct >>> 16), (byte) (ct >>> 8), (byte) ct};
+            byte[] block = EcCurve.sm3(concat(z, ctBe));
+            int n = Math.min(block.length, klen - off);
+            System.arraycopy(block, 0, out, off, n);
+            off += n;
+            ct++;
+        }
+        return out;
     }
 
     public byte[] hmac(byte[] key, byte[] data) {

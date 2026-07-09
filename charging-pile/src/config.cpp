@@ -55,6 +55,8 @@ PileConfig PileConfig::load(const std::string& path) {
                 cfg.connect_timeout_ms = std::stoi(val);
             } else if (key == "read.timeout.ms") {
                 cfg.read_timeout_ms = std::stoi(val);
+            } else if (key == "keystore.path") {
+                cfg.keystore_path = val;
             }
         }
         LOG_INFO("已加载配置文件: " + path);
@@ -71,5 +73,6 @@ PileConfig PileConfig::load(const std::string& path) {
         std::stoi(env_or("CLPKC_CONNECT_TIMEOUT_MS", std::to_string(cfg.connect_timeout_ms)));
     cfg.read_timeout_ms =
         std::stoi(env_or("CLPKC_READ_TIMEOUT_MS", std::to_string(cfg.read_timeout_ms)));
+    cfg.keystore_path = env_or("CLPKC_KEYSTORE_PATH", cfg.keystore_path);
     return cfg;
 }

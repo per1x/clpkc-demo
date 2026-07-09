@@ -26,6 +26,7 @@ add_executable(charging_pile
     src/crypto_utils.cpp
     src/net_client.cpp
     src/config.cpp
+    src/keystore.cpp
 )
 
 target_include_directories(charging_pile PRIVATE

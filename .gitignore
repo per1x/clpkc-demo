@@ -34,3 +34,7 @@ Thumbs.db
 *.zip
 *.rar
 .sisyphus/
+
+# 桩本地密钥（含私钥，勿提交）
+pile-keystore.json
+charging-pile/pile-keystore.json

@@ -229,17 +229,34 @@ std::string CryptoUtils::derive_session_key(const std::string& eph_secret_hex, c
     BnPtr sx(BN_new(), BN_free);
     BnPtr sy(BN_new(), BN_free);
     EC_POINT_get_affine_coordinates(group_, shared.get(), sx.get(), sy.get(), ctx_);
-    std::vector<unsigned char> input = coord_bytes(sx.get());
-    auto append_hex = [&](const std::string& hex) {
-        auto b = hex_to_bytes(hex);
-        input.insert(input.end(), b.begin(), b.end());
+
+    // Z = len‖Sx ‖ len‖RA ‖ len‖RB ‖ len‖ID_A ‖ len‖ID_B ‖ len‖nonce（2 字节大端长度前缀）
+    std::vector<unsigned char> z;
+    auto append_field = [&](const std::vector<unsigned char>& f) {
+        z.push_back(static_cast<unsigned char>((f.size() >> 8) & 0xff));
+        z.push_back(static_cast<unsigned char>(f.size() & 0xff));
+        z.insert(z.end(), f.begin(), f.end());
     };
-    append_hex(ra_hex);
-    append_hex(rb_hex);
-    input.insert(input.end(), ida.begin(), ida.end());
-    input.insert(input.end(), idb.begin(), idb.end());
-    input.insert(input.end(), nonce.begin(), nonce.end());
-    return bytes_to_hex(sm3(input));
+    append_field(coord_bytes(sx.get()));
+    append_field(hex_to_bytes(ra_hex));
+    append_field(hex_to_bytes(rb_hex));
+    append_field(std::vector<unsigned char>(ida.begin(), ida.end()));
+    append_field(std::vector<unsigned char>(idb.begin(), idb.end()));
+    append_field(std::vector<unsigned char>(nonce.begin(), nonce.end()));
+
+    // GB/T 32918.3 KDF（SM3 计数器模式）：ct 从 0x00000001 起，Ha=SM3(Z‖ct_be32)，klen=32 字节
+    const std::size_t klen = 32;
+    std::vector<unsigned char> out;
+    unsigned int ct = 1;
+    while (out.size() < klen) {
+        std::vector<unsigned char> in = z;
+        auto ctb = be32(ct++);
+        in.insert(in.end(), ctb.begin(), ctb.end());
+        auto block = sm3(in);
+        out.insert(out.end(), block.begin(), block.end());
+    }
+    out.resize(klen);
+    return bytes_to_hex(out);
 }
 
 std::string CryptoUtils::hmac_sm3_hex(const std::string& key_hex, const std::string& data_hex) {
