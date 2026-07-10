@@ -7,7 +7,6 @@ import java.io.OutputStreamWriter;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.SecureRandom;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -37,7 +36,6 @@ public final class PileSessionHandler implements Runnable {
 
     private static final Logger log = LoggerFactory.getLogger(PileSessionHandler.class);
     private static final int MAX_LINE_BYTES = 16 * 1024;
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Socket socket;
     private final CloudIdentity identity;
@@ -67,30 +65,22 @@ public final class PileSessionHandler implements Runnable {
     }
 
     private void handle(InputStream in, BufferedWriter writer, String peer) throws IOException {
-        // 下发挑战 nonce + 云平台身份（供桩签名/重构公钥）
-        byte[] nonce = new byte[16];
-        RANDOM.nextBytes(nonce);
-        String nonceHex = Hex.encode(nonce);
-        send(writer, ordered(
-            "type", "challenge",
-            "nonce", nonceHex,
-            "id", identity.id(),
-            "claimedPublic", identity.claimedPublicHex()));
-
+        // 桩（主机）发起：云不再下发 challenge，直接读桩的首报文并按类型分流。
         Map<String, String> msg = JsonCodec.parse(readLine(in));
         String type = msg.get("type");
         if ("hmac".equals(type)) {
-            provision(in, writer, peer, nonce, msg);           // 第一阶段
+            provision(in, writer, peer, msg);      // 第一阶段（桩自带 nonce）
         } else if ("ka_request".equals(type)) {
-            session(writer, peer, nonceHex, msg);              // 第二阶段
+            session(writer, peer, msg);            // 第二阶段（桩发起，2 步）
         } else {
             log.warn("[Cloud][Socket] {} 未知首报文类型: {}", peer, type);
         }
     }
 
-    /** 第一阶段：HMAC 认证 + 转发 KGC 申请部分私钥（仅首次）。 */
-    private void provision(InputStream in, BufferedWriter writer, String peer, byte[] nonce,
+    /** 第一阶段：HMAC 认证 + 转发 KGC 申请部分私钥（仅首次；nonce 由桩生成）。 */
+    private void provision(InputStream in, BufferedWriter writer, String peer,
                            Map<String, String> hmacReq) throws IOException {
+        byte[] nonce = Hex.decode(required(hmacReq, "nonce"));
         byte[] expected = identity.crypto().hmac(identity.sharedKey(), nonce);
         String macHex = hmacReq.get("mac");
         if (macHex == null || !MessageDigest.isEqual(expected, Hex.decode(macHex))) {
@@ -114,11 +104,10 @@ public final class PileSessionHandler implements Runnable {
         log.info("[Cloud][Socket] {} 第一阶段完成，已下发声明公钥+部分私钥（桩本地持久化后走第二阶段）。", peer);
     }
 
-    /** 第二阶段：核对桩编号 + 重构 PA 验签 + 返回签名响应 + 派生会话密钥。 */
-    private void session(BufferedWriter writer, String peer, String nonceHex,
-                         Map<String, String> kaReq) throws IOException {
+    /** 第二阶段（桩发起，2 步）：验桩(发起方)签名 + 云(响应方)签名回应 + 派生会话密钥。 */
+    private void session(BufferedWriter writer, String peer, Map<String, String> kaReq) throws IOException {
         ClpkcCrypto crypto = identity.crypto();
-        String pileId = required(kaReq, "id");
+        String pileId = required(kaReq, "id");                       // ID_B
 
         // 桩编号核对（对接云平台既有编号系统，见 PileDirectory）
         if (!pileDirectory.isAuthorized(pileId)) {
@@ -127,30 +116,36 @@ public final class PileSessionHandler implements Runnable {
             return;
         }
 
-        String raHex = required(kaReq, "ra");
+        String nonceHex = required(kaReq, "nonce");                  // 桩生成的 nonce
+        String rBHex = required(kaReq, "rB");                        // R_B（桩临时公钥）
+        String wBHex = required(kaReq, "claimedPublic");            // W_B（桩自己的声明公钥）
         String pileFullPublic = crypto.reconstructFullPublicHex(
-            pileId, required(kaReq, "claimedPublic"), identity.masterPublicHex());
-        boolean ok = crypto.verify(Hex.decode(raHex), pileId,
-            Hex.decode(identity.claimedPublicHex()), nonceHex, required(kaReq, "sig"), pileFullPublic);
+            pileId, wBHex, identity.masterPublicHex());
+        // 验桩(发起方)签名 transcript = R_B ‖ ID_B ‖ W_B ‖ nonce
+        boolean ok = crypto.verifyInitiator(Hex.decode(rBHex), pileId, Hex.decode(wBHex),
+            nonceHex, required(kaReq, "sig"), pileFullPublic);
         if (!ok) {
             log.warn("[Cloud][Socket] {} 桩端 KA 签名校验失败。", peer);
             send(writer, Map.of("type", "ka_fail"));
             return;
         }
 
-        ClpkcCrypto.KeyMaterial ephemeral = crypto.generateStaticKey();
-        String sig = crypto.sign(Hex.decode(ephemeral.publicKeyHex()),
-            identity.id(), Hex.decode(raHex), nonceHex, identity.fullPrivate());
+        // 云(响应方)生成临时公钥 R_A，签 transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce
+        ClpkcCrypto.KeyMaterial cloudEph = crypto.generateStaticKey();  // (r_A, R_A)
+        String rAHex = cloudEph.publicKeyHex();
+        String sig = crypto.signResponder(Hex.decode(rAHex), Hex.decode(rBHex),
+            identity.id(), Hex.decode(identity.claimedPublicHex()), nonceHex, identity.fullPrivate());
         send(writer, ordered(
             "type", "ka_response",
             "id", identity.id(),
             "claimedPublic", identity.claimedPublicHex(),
-            "rb", ephemeral.publicKeyHex(),
+            "rA", rAHex,
             "sig", sig));
 
-        String sessionKey = crypto.deriveSessionKey(ephemeral.secretScalar(),
-            raHex, Hex.decode(raHex), Hex.decode(ephemeral.publicKeyHex()),
-            pileId, identity.id(), nonceHex);
+        // SK = KDF(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)
+        String sessionKey = crypto.deriveSessionKey(cloudEph.secretScalar(),
+            rBHex, Hex.decode(rAHex), Hex.decode(rBHex),
+            identity.id(), pileId, nonceHex);
         if (sessionKey.length() != 64) {
             throw new IllegalStateException("session key derivation failed");
         }

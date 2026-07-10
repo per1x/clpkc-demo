@@ -38,25 +38,28 @@ class ClpkcCryptoTest {
 
         String nonce = Hex.encode(EcCurve.sm3("session-nonce".getBytes(StandardCharsets.UTF_8)));
 
-        ClpkcCrypto.KeyMaterial ephA = crypto.generateStaticKey();
-        String sigA = crypto.sign(Hex.decode(ephA.publicKeyHex()), pileId,
-            Hex.decode(cloudPk.claimedPublicHex()), nonce, pilePriv);
-        assertTrue(crypto.verify(Hex.decode(ephA.publicKeyHex()), pileId,
-            Hex.decode(cloudPk.claimedPublicHex()), nonce, sigA, pilePub));
+        // 桩=发起方B(R_B)、云=响应方A(R_A)
+        ClpkcCrypto.KeyMaterial ephPile = crypto.generateStaticKey();   // R_B
+        ClpkcCrypto.KeyMaterial ephCloud = crypto.generateStaticKey();  // R_A
+        byte[] rB = Hex.decode(ephPile.publicKeyHex());
+        byte[] rA = Hex.decode(ephCloud.publicKeyHex());
 
-        ClpkcCrypto.KeyMaterial ephB = crypto.generateStaticKey();
-        String sigB = crypto.sign(Hex.decode(ephB.publicKeyHex()), cloudId,
-            Hex.decode(ephA.publicKeyHex()), nonce, cloudPriv);
-        assertTrue(crypto.verify(Hex.decode(ephB.publicKeyHex()), cloudId,
-            Hex.decode(ephA.publicKeyHex()), nonce, sigB, cloudPub));
+        // 桩(发起方)签 R_B ‖ ID_B ‖ W_B ‖ nonce
+        String sigPile = crypto.signInitiator(rB, pileId, Hex.decode(pilePk.claimedPublicHex()), nonce, pilePriv);
+        assertTrue(crypto.verifyInitiator(rB, pileId, Hex.decode(pilePk.claimedPublicHex()), nonce, sigPile, pilePub));
 
-        assertFalse(crypto.verify(Hex.decode(ephB.publicKeyHex()), cloudId,
-            Hex.decode(ephA.publicKeyHex()), nonce + "00", sigB, cloudPub));
+        // 云(响应方)签 R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce
+        String sigCloud = crypto.signResponder(rA, rB, cloudId, Hex.decode(cloudPk.claimedPublicHex()), nonce, cloudPriv);
+        assertTrue(crypto.verifyResponder(rA, rB, cloudId, Hex.decode(cloudPk.claimedPublicHex()), nonce, sigCloud, cloudPub));
 
-        String skPile = crypto.deriveSessionKey(ephA.secretScalar(), ephB.publicKeyHex(),
-            Hex.decode(ephA.publicKeyHex()), Hex.decode(ephB.publicKeyHex()), pileId, cloudId, nonce);
-        String skCloud = crypto.deriveSessionKey(ephB.secretScalar(), ephA.publicKeyHex(),
-            Hex.decode(ephA.publicKeyHex()), Hex.decode(ephB.publicKeyHex()), pileId, cloudId, nonce);
+        // 篡改 nonce 应验签失败
+        assertFalse(crypto.verifyResponder(rA, rB, cloudId, Hex.decode(cloudPk.claimedPublicHex()), nonce + "00", sigCloud, cloudPub));
+
+        // SK = KDF(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)
+        String skPile = crypto.deriveSessionKey(ephPile.secretScalar(), ephCloud.publicKeyHex(),
+            rA, rB, cloudId, pileId, nonce);
+        String skCloud = crypto.deriveSessionKey(ephCloud.secretScalar(), ephPile.publicKeyHex(),
+            rA, rB, cloudId, pileId, nonce);
         assertEquals(skPile, skCloud);
         assertEquals(64, skPile.length());
     }

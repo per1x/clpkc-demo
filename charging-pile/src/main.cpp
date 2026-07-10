@@ -51,12 +51,13 @@ void provision(const PileConfig& cfg, CryptoUtils& crypto) {
     NetClient net(cfg.connect_timeout_ms, cfg.read_timeout_ms);
     net.connect(cfg.cloud_host, cfg.cloud_port);
 
-    json challenge = read_msg(net);
-    std::string nonce = field(challenge, "nonce");
+    // 桩发起：自生成 nonce，直接发 hmac（不再等云 challenge）
+    std::string nonce = crypto.random_bytes_hex(16);
     send_msg(net, json{
         {"type", "hmac"},
         {"id", cfg.pile_id},
         {"publicKey", static_key.public_hex},
+        {"nonce", nonce},
         {"mac", crypto.hmac_sm3_hex(cfg.shared_key_hex, nonce)}
     });
     json auth = read_msg(net);
@@ -84,35 +85,41 @@ void session(const PileConfig& cfg, CryptoUtils& crypto, const PileKeystore& ks)
     NetClient net(cfg.connect_timeout_ms, cfg.read_timeout_ms);
     net.connect(cfg.cloud_host, cfg.cloud_port);
 
-    json challenge = read_msg(net);
-    std::string nonce = field(challenge, "nonce");
-    std::string cloud_claimed = field(challenge, "claimedPublic");  // WA_cloud（用于签名 wb）
-
-    KeyMaterial eph = crypto.generate_static_key();  // (a, RA)
-    std::string sig = crypto.sign_transcript(eph.public_hex, ks.id, cloud_claimed, nonce, ks.full_private_hex);
+    // 桩（发起方 B）：自生成 nonce 与临时密钥 (r_B, R_B)，直接发 ka_request（msg1）
+    std::string nonce = crypto.random_bytes_hex(16);
+    KeyMaterial eph = crypto.generate_static_key();  // (r_B, R_B)
+    // 桩签（发起方）transcript = R_B ‖ ID_B ‖ W_B ‖ nonce
+    std::string sig = crypto.sign_initiator(
+        eph.public_hex, ks.id, ks.claimed_public_hex, nonce, ks.full_private_hex);
     send_msg(net, json{
         {"type", "ka_request"},
         {"id", ks.id},
         {"claimedPublic", ks.claimed_public_hex},
-        {"ra", eph.public_hex},
+        {"rB", eph.public_hex},
+        {"nonce", nonce},
         {"sig", sig}
     });
 
-    json ka = read_msg(net);
+    json ka = read_msg(net);  // msg2
     if (field(ka, "type") != "ka_response") {
         throw std::runtime_error("密钥协商失败，云平台未返回有效响应");
     }
-    std::string rb = field(ka, "rb");
     // 用持久化的 Ppub 重构云平台完整公钥 PA_cloud = WA_cloud + λ·Ppub
+    std::string cloud_id = field(ka, "id");                   // ID_A
+    std::string cloud_claimed = field(ka, "claimedPublic");  // W_A
+    std::string r_a = field(ka, "rA");                       // R_A（云临时公钥）
     std::string cloud_full_public = crypto.reconstruct_full_public(
-        field(ka, "id"), field(ka, "claimedPublic"), ks.master_public_hex);
-    if (!crypto.verify_transcript(rb, field(ka, "id"), eph.public_hex, nonce, field(ka, "sig"), cloud_full_public)) {
+        cloud_id, cloud_claimed, ks.master_public_hex);
+    // 验云签（响应方）transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce
+    if (!crypto.verify_responder(
+            r_a, eph.public_hex, cloud_id, cloud_claimed, nonce, field(ka, "sig"), cloud_full_public)) {
         throw std::runtime_error("云平台签名校验失败");
     }
     LOG_INFO("第二阶段: 云平台签名校验通过。");
 
+    // SK = KDF(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)
     std::string session_key = crypto.derive_session_key(
-        eph.secret_hex, rb, eph.public_hex, rb, ks.id, field(ka, "id"), nonce);
+        eph.secret_hex, r_a, r_a, eph.public_hex, cloud_id, ks.id, nonce);
     if (session_key.size() != 64) {
         throw std::runtime_error("会话密钥派生异常");
     }

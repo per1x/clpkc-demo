@@ -38,12 +38,17 @@ public:
     std::string reconstruct_full_public(const std::string& id, const std::string& claimed_public_hex,
                                         const std::string& master_public_hex);
 
-    std::string sign_transcript(const std::string& ra_hex, const std::string& id,
-                                const std::string& wb_hex, const std::string& nonce,
-                                const std::string& full_private_hex);
-    bool verify_transcript(const std::string& ra_hex, const std::string& id,
-                           const std::string& wb_hex, const std::string& nonce,
-                           const std::string& sig_der_hex, const std::string& full_public_hex);
+    // 发起方（桩）签名 transcript = R_B ‖ ID_B ‖ W_B ‖ nonce
+    std::string sign_initiator(const std::string& r_pile_hex, const std::string& id,
+                               const std::string& w_hex, const std::string& nonce,
+                               const std::string& full_private_hex);
+    // 验响应方（云）签名 transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce
+    bool verify_responder(const std::string& r_a_hex, const std::string& r_b_hex,
+                          const std::string& id, const std::string& w_hex, const std::string& nonce,
+                          const std::string& sig_der_hex, const std::string& full_public_hex);
+
+    // 生成 n 字节随机数并返回 hex（握手 nonce 用，CSPRNG）
+    std::string random_bytes_hex(int n_bytes);
 
     std::string derive_session_key(const std::string& eph_secret_hex, const std::string& peer_point_hex,
                                    const std::string& ra_hex, const std::string& rb_hex,
@@ -60,8 +65,15 @@ private:
     // λ = SM3(WAx‖WAy‖HA) 作大整数
     BIGNUM* compute_lambda(const EC_POINT* wa, const std::vector<unsigned char>& ha) const;
 
-    std::vector<unsigned char> transcript(const std::string& ra_hex, const std::string& id,
-                                          const std::string& wb_hex, const std::string& nonce) const;
+    // 通用：把有序定长字节字段直接拼接（无长度前缀）
+    static std::vector<unsigned char> build_transcript(const std::vector<std::vector<unsigned char>>& fields);
+    // ID 定长编码：32 字节，右侧 0x00 补齐，超长截断并告警
+    static std::vector<unsigned char> id_fixed(const std::string& id);
+    // SM2 签名/验签核心（对已构造好的 msg 操作，id 作 ZA）
+    std::string sm2_sign(const std::vector<unsigned char>& msg, const std::string& id,
+                         const std::string& full_private_hex);
+    bool sm2_verify(const std::vector<unsigned char>& msg, const std::string& id,
+                    const std::string& sig_der_hex, const std::string& full_public_hex);
 
     // 点 ↔ x‖y（64 字节 / 128 hex），带曲线校验
     std::string point_to_xy_hex(const EC_POINT* point) const;

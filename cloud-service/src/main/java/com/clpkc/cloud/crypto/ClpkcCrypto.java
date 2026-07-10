@@ -1,10 +1,12 @@
 package com.clpkc.cloud.crypto;
 
-import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.bouncycastle.crypto.digests.SM3Digest;
 import org.bouncycastle.crypto.engines.SM2Engine;
@@ -14,6 +16,7 @@ import org.bouncycastle.crypto.params.ECPublicKeyParameters;
 import org.bouncycastle.crypto.params.KeyParameter;
 import org.bouncycastle.crypto.params.ParametersWithID;
 import org.bouncycastle.crypto.params.ParametersWithRandom;
+import org.bouncycastle.crypto.signers.PlainDSAEncoding;
 import org.bouncycastle.crypto.signers.SM2Signer;
 import org.bouncycastle.math.ec.ECPoint;
 
@@ -25,6 +28,10 @@ import org.bouncycastle.math.ec.ECPoint;
  * SM2 公钥加密（C1C3C2 原始拼接）、SM2 数字签名（DER）、HMAC-SM3。</p>
  */
 public final class ClpkcCrypto {
+
+    private static final Logger log = LoggerFactory.getLogger(ClpkcCrypto.class);
+    /** transcript / KDF 拼接里 ID 的定长字节数（右侧 0x00 补齐）。 */
+    private static final int ID_FIXED_LEN = 32;
 
     private final EcCurve curve;
     private final SecureRandom random;
@@ -156,10 +163,27 @@ public final class ClpkcCrypto {
     // SM2 签名 / 验签（DER；id 作 ZA 用户标识；transcript 绑 nonce）
     // ------------------------------------------------------------------
 
-    public String sign(byte[] ra, String id, byte[] wb, String nonce, BigInteger fullPrivate) {
+    /** 发起方（桩）签名：transcript = R_B ‖ ID_B ‖ W_B ‖ nonce（发起时尚无 R_A，只签自己的）。 */
+    public String signInitiator(byte[] rB, String idB, byte[] wB, String nonce, BigInteger fullPrivate) {
+        return sm2Sign(transcriptInitiator(rB, idB, wB, nonce), idB, fullPrivate);
+    }
+
+    public boolean verifyInitiator(byte[] rB, String idB, byte[] wB, String nonce, String sigHex, String fullPublicHex) {
+        return sm2Verify(transcriptInitiator(rB, idB, wB, nonce), idB, sigHex, fullPublicHex);
+    }
+
+    /** 响应方（云）签名：transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce（已收到 R_B，绑双方临时公钥）。 */
+    public String signResponder(byte[] rA, byte[] rB, String idA, byte[] wA, String nonce, BigInteger fullPrivate) {
+        return sm2Sign(transcriptResponder(rA, rB, idA, wA, nonce), idA, fullPrivate);
+    }
+
+    public boolean verifyResponder(byte[] rA, byte[] rB, String idA, byte[] wA, String nonce, String sigHex, String fullPublicHex) {
+        return sm2Verify(transcriptResponder(rA, rB, idA, wA, nonce), idA, sigHex, fullPublicHex);
+    }
+
+    private String sm2Sign(byte[] msg, String id, BigInteger fullPrivate) {
         try {
-            byte[] msg = transcript(ra, id, wb, nonce);
-            SM2Signer signer = new SM2Signer();
+            SM2Signer signer = new SM2Signer(PlainDSAEncoding.INSTANCE);  // 裸 r‖s 64 字节
             signer.init(true, new ParametersWithID(new ParametersWithRandom(
                 new ECPrivateKeyParameters(fullPrivate, EcCurve.DOMAIN), random),
                 id.getBytes(StandardCharsets.UTF_8)));
@@ -170,11 +194,10 @@ public final class ClpkcCrypto {
         }
     }
 
-    public boolean verify(byte[] ra, String id, byte[] wb, String nonce, String sigHex, String fullPublicHex) {
+    private boolean sm2Verify(byte[] msg, String id, String sigHex, String fullPublicHex) {
         try {
-            byte[] msg = transcript(ra, id, wb, nonce);
             ECPoint pa = curve.pointFromHex(fullPublicHex);
-            SM2Signer signer = new SM2Signer();
+            SM2Signer signer = new SM2Signer(PlainDSAEncoding.INSTANCE);  // 裸 r‖s 64 字节
             signer.init(false, new ParametersWithID(
                 new ECPublicKeyParameters(pa, EcCurve.DOMAIN), id.getBytes(StandardCharsets.UTF_8)));
             signer.update(msg, 0, msg.length);
@@ -188,35 +211,14 @@ public final class ClpkcCrypto {
     // 会话密钥 / HMAC-SM3
     // ------------------------------------------------------------------
 
+    /** SK = SM3( Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce )，全定长字段直拼、单次 SM3 出 32 字节。 */
     public String deriveSessionKey(BigInteger ephemeralScalar, String peerPointHex,
                                    byte[] ra, byte[] rb, String idA, String idB, String nonce) {
         ECPoint shared = curve.multiply(curve.pointFromHex(peerPointHex), ephemeralScalar);
         byte[] sharedX = curve.toFixed(shared.normalize().getAffineXCoord().toBigInteger(), EcCurve.SCALAR_LEN);
-        // Z = len‖Sx ‖ len‖RA ‖ len‖RB ‖ len‖ID_A ‖ len‖ID_B ‖ len‖nonce（2 字节大端长度前缀，消除拼接歧义）
-        ByteArrayOutputStream z = new ByteArrayOutputStream();
-        appendField(z, sharedX);
-        appendField(z, ra);
-        appendField(z, rb);
-        appendField(z, idA.getBytes(StandardCharsets.UTF_8));
-        appendField(z, idB.getBytes(StandardCharsets.UTF_8));
-        appendField(z, nonce.getBytes(StandardCharsets.UTF_8));
-        return Hex.encode(sm3Kdf(z.toByteArray(), EcCurve.SCALAR_LEN));
-    }
-
-    /** GB/T 32918.3 KDF（SM3 计数器模式）：ct 从 0x00000001 起，Ha=SM3(Z‖ct_be32)，拼接取前 klen 字节。 */
-    private byte[] sm3Kdf(byte[] z, int klen) {
-        byte[] out = new byte[klen];
-        int off = 0;
-        int ct = 1;
-        while (off < klen) {
-            byte[] ctBe = {(byte) (ct >>> 24), (byte) (ct >>> 16), (byte) (ct >>> 8), (byte) ct};
-            byte[] block = EcCurve.sm3(concat(z, ctBe));
-            int n = Math.min(block.length, klen - off);
-            System.arraycopy(block, 0, out, off, n);
-            off += n;
-            ct++;
-        }
-        return out;
+        byte[] digest = EcCurve.sm3(concat(sharedX, ra, rb,
+            fixedId(idA), fixedId(idB), nonce.getBytes(StandardCharsets.UTF_8)));
+        return Hex.encode(digest);
     }
 
     public byte[] hmac(byte[] key, byte[] data) {
@@ -249,21 +251,26 @@ public final class ClpkcCrypto {
         return new BigInteger(1, EcCurve.sm3(concat(wx, wy, ha)));
     }
 
-    private byte[] transcript(byte[] ra, String id, byte[] wb, String nonce) {
-        byte[] idBytes = id.getBytes(StandardCharsets.UTF_8);
-        byte[] nonceBytes = nonce.getBytes(StandardCharsets.UTF_8);
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        appendField(out, ra);
-        appendField(out, idBytes);
-        appendField(out, wb);
-        appendField(out, nonceBytes);
-        return out.toByteArray();
+    /** 发起方 transcript：R_B ‖ ID_B ‖ W_B ‖ nonce（全定长字段直拼，无长度前缀）。 */
+    private byte[] transcriptInitiator(byte[] rB, String idB, byte[] wB, String nonce) {
+        return concat(rB, fixedId(idB), wB, nonce.getBytes(StandardCharsets.UTF_8));
     }
 
-    private void appendField(ByteArrayOutputStream out, byte[] field) {
-        out.write((field.length >>> 8) & 0xff);
-        out.write(field.length & 0xff);
-        out.write(field, 0, field.length);
+    /** 响应方 transcript：R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce（全定长字段直拼，无长度前缀）。 */
+    private byte[] transcriptResponder(byte[] rA, byte[] rB, String idA, byte[] wA, String nonce) {
+        return concat(rA, rB, fixedId(idA), wA, nonce.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** ID 定长编码：UTF-8 取 {@value #ID_FIXED_LEN} 字节，右侧 0x00 补齐；超长截断并告警。 */
+    private byte[] fixedId(String id) {
+        byte[] raw = id.getBytes(StandardCharsets.UTF_8);
+        byte[] out = new byte[ID_FIXED_LEN];
+        int n = Math.min(raw.length, ID_FIXED_LEN);
+        if (raw.length > ID_FIXED_LEN) {
+            log.warn("ID 超过 {} 字节，已截断用于 transcript/KDF: {}", ID_FIXED_LEN, id);
+        }
+        System.arraycopy(raw, 0, out, 0, n);
+        return out;
     }
 
     private static byte[] concat(byte[]... parts) {

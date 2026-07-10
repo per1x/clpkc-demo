@@ -1,6 +1,7 @@
 #include "crypto_utils.h"
 
 #include <openssl/core_names.h>
+#include <openssl/ecdsa.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/obj_mac.h>
@@ -10,6 +11,8 @@
 #include <cstring>
 #include <memory>
 #include <stdexcept>
+
+#include "logging.h"
 
 namespace {
 using BnPtr = std::unique_ptr<BIGNUM, decltype(&BN_free)>;
@@ -44,6 +47,45 @@ EVP_PKEY* make_sm2_pkey(const std::vector<unsigned char>& pub_sec1, const BIGNUM
         throw std::runtime_error("构建 SM2 EVP_PKEY 失败");
     }
     return pkey;
+}
+
+// DER 编码的 SM2 签名 → 裸 r‖s（各 32 字节大端，共 64 字节）
+std::vector<unsigned char> ecdsa_der_to_raw(const std::vector<unsigned char>& der) {
+    const unsigned char* p = der.data();
+    ECDSA_SIG* sig = d2i_ECDSA_SIG(nullptr, &p, static_cast<long>(der.size()));
+    if (!sig) {
+        throw std::runtime_error("SM2 签名 DER 解析失败");
+    }
+    const BIGNUM* r = nullptr;
+    const BIGNUM* s = nullptr;
+    ECDSA_SIG_get0(sig, &r, &s);
+    std::vector<unsigned char> out(64, 0);
+    BN_bn2binpad(r, out.data(), 32);
+    BN_bn2binpad(s, out.data() + 32, 32);
+    ECDSA_SIG_free(sig);
+    return out;
+}
+
+// 裸 r‖s（64 字节）→ DER 编码（供 OpenSSL EVP 验签）
+std::vector<unsigned char> ecdsa_raw_to_der(const std::vector<unsigned char>& raw) {
+    if (raw.size() != 64) {
+        throw std::runtime_error("SM2 裸签名必须为 64 字节 r‖s");
+    }
+    ECDSA_SIG* sig = ECDSA_SIG_new();
+    BIGNUM* r = BN_bin2bn(raw.data(), 32, nullptr);
+    BIGNUM* s = BN_bin2bn(raw.data() + 32, 32, nullptr);
+    if (!sig || !r || !s || ECDSA_SIG_set0(sig, r, s) != 1) {
+        if (r) BN_free(r);
+        if (s) BN_free(s);
+        if (sig) ECDSA_SIG_free(sig);
+        throw std::runtime_error("构造 ECDSA_SIG 失败");
+    }
+    int len = i2d_ECDSA_SIG(sig, nullptr);
+    std::vector<unsigned char> der(static_cast<std::size_t>(len));
+    unsigned char* p = der.data();
+    i2d_ECDSA_SIG(sig, &p);
+    ECDSA_SIG_free(sig);
+    return der;
 }
 }  // namespace
 
@@ -148,9 +190,41 @@ std::string CryptoUtils::sm2_decrypt_c1c3c2(const std::string& cipher_hex, const
 // ---------------------------------------------------------------------------
 // SM2 签名 / 验签（EVP，DER，id 作 ZA）
 // ---------------------------------------------------------------------------
-std::string CryptoUtils::sign_transcript(const std::string& ra_hex, const std::string& id, const std::string& wb_hex,
-                                         const std::string& nonce, const std::string& full_private_hex) {
-    auto msg = transcript(ra_hex, id, wb_hex, nonce);
+// 全定长字段直拼，无长度前缀
+std::vector<unsigned char> CryptoUtils::build_transcript(const std::vector<std::vector<unsigned char>>& fields) {
+    std::vector<unsigned char> out;
+    for (const auto& f : fields) {
+        out.insert(out.end(), f.begin(), f.end());
+    }
+    return out;
+}
+
+// ID 定长编码：取 32 字节，右侧 0x00 补齐；超长截断并告警
+std::vector<unsigned char> CryptoUtils::id_fixed(const std::string& id) {
+    const std::size_t ID_FIXED_LEN = 32;
+    std::vector<unsigned char> out(ID_FIXED_LEN, 0x00);
+    std::size_t n = id.size() < ID_FIXED_LEN ? id.size() : ID_FIXED_LEN;
+    if (id.size() > ID_FIXED_LEN) {
+        LOG_WARN("ID 超过 32 字节，已截断用于 transcript/KDF: " + id);
+    }
+    std::memcpy(out.data(), id.data(), n);
+    return out;
+}
+
+// 发起方（桩）签名：transcript = R_B ‖ ID_B ‖ W_B ‖ nonce（全定长直拼）
+std::string CryptoUtils::sign_initiator(const std::string& r_pile_hex, const std::string& id,
+                                        const std::string& w_hex, const std::string& nonce,
+                                        const std::string& full_private_hex) {
+    auto msg = build_transcript({
+        hex_to_bytes(r_pile_hex),
+        id_fixed(id),
+        hex_to_bytes(w_hex),
+        std::vector<unsigned char>(nonce.begin(), nonce.end())});
+    return sm2_sign(msg, id, full_private_hex);
+}
+
+std::string CryptoUtils::sm2_sign(const std::vector<unsigned char>& msg, const std::string& id,
+                                  const std::string& full_private_hex) {
     BnPtr sk(hex_to_bn(full_private_hex), BN_free);
     PointPtr pub(EC_POINT_new(group_), EC_POINT_free);
     EC_POINT_mul(group_, pub.get(), sk.get(), nullptr, nullptr, ctx_);
@@ -180,14 +254,25 @@ std::string CryptoUtils::sign_transcript(const std::string& ra_hex, const std::s
         throw std::runtime_error("SM2 sign final 失败");
     }
     sig.resize(siglen);
-    return bytes_to_hex(sig);
+    return bytes_to_hex(ecdsa_der_to_raw(sig));  // 输出裸 r‖s 64 字节
 }
 
-bool CryptoUtils::verify_transcript(const std::string& ra_hex, const std::string& id, const std::string& wb_hex,
-                                    const std::string& nonce, const std::string& sig_der_hex,
-                                    const std::string& full_public_hex) {
+// 验响应方（云）签名：transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce
+bool CryptoUtils::verify_responder(const std::string& r_a_hex, const std::string& r_b_hex,
+                                   const std::string& id, const std::string& w_hex, const std::string& nonce,
+                                   const std::string& sig_der_hex, const std::string& full_public_hex) {
+    auto msg = build_transcript({
+        hex_to_bytes(r_a_hex),
+        hex_to_bytes(r_b_hex),
+        id_fixed(id),
+        hex_to_bytes(w_hex),
+        std::vector<unsigned char>(nonce.begin(), nonce.end())});
+    return sm2_verify(msg, id, sig_der_hex, full_public_hex);
+}
+
+bool CryptoUtils::sm2_verify(const std::vector<unsigned char>& msg, const std::string& id,
+                             const std::string& sig_der_hex, const std::string& full_public_hex) {
     try {
-        auto msg = transcript(ra_hex, id, wb_hex, nonce);
         PointPtr pa(point_from_xy_hex(full_public_hex), EC_POINT_free);
         auto pa_sec1 = point_to_sec1(pa.get());
         EVP_PKEY* pkey = make_sm2_pkey(pa_sec1, nullptr);
@@ -204,7 +289,7 @@ bool CryptoUtils::verify_transcript(const std::string& ra_hex, const std::string
         EVP_MD_CTX_set_pkey_ctx(mctx, pctx);
         std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> mctx_guard(mctx, EVP_MD_CTX_free);
 
-        auto sig = hex_to_bytes(sig_der_hex);
+        auto sig = ecdsa_raw_to_der(hex_to_bytes(sig_der_hex));  // 裸 r‖s 64 字节 → DER
         if (EVP_DigestVerifyInit(mctx, nullptr, EVP_sm3(), nullptr, pkey) <= 0
             || EVP_DigestVerifyUpdate(mctx, msg.data(), msg.size()) <= 0) {
             return false;
@@ -230,33 +315,15 @@ std::string CryptoUtils::derive_session_key(const std::string& eph_secret_hex, c
     BnPtr sy(BN_new(), BN_free);
     EC_POINT_get_affine_coordinates(group_, shared.get(), sx.get(), sy.get(), ctx_);
 
-    // Z = len‖Sx ‖ len‖RA ‖ len‖RB ‖ len‖ID_A ‖ len‖ID_B ‖ len‖nonce（2 字节大端长度前缀）
-    std::vector<unsigned char> z;
-    auto append_field = [&](const std::vector<unsigned char>& f) {
-        z.push_back(static_cast<unsigned char>((f.size() >> 8) & 0xff));
-        z.push_back(static_cast<unsigned char>(f.size() & 0xff));
-        z.insert(z.end(), f.begin(), f.end());
-    };
-    append_field(coord_bytes(sx.get()));
-    append_field(hex_to_bytes(ra_hex));
-    append_field(hex_to_bytes(rb_hex));
-    append_field(std::vector<unsigned char>(ida.begin(), ida.end()));
-    append_field(std::vector<unsigned char>(idb.begin(), idb.end()));
-    append_field(std::vector<unsigned char>(nonce.begin(), nonce.end()));
-
-    // GB/T 32918.3 KDF（SM3 计数器模式）：ct 从 0x00000001 起，Ha=SM3(Z‖ct_be32)，klen=32 字节
-    const std::size_t klen = 32;
-    std::vector<unsigned char> out;
-    unsigned int ct = 1;
-    while (out.size() < klen) {
-        std::vector<unsigned char> in = z;
-        auto ctb = be32(ct++);
-        in.insert(in.end(), ctb.begin(), ctb.end());
-        auto block = sm3(in);
-        out.insert(out.end(), block.begin(), block.end());
-    }
-    out.resize(klen);
-    return bytes_to_hex(out);
+    // SK = SM3( Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce )，全定长字段直拼、单次 SM3
+    std::vector<unsigned char> z = build_transcript({
+        coord_bytes(sx.get()),
+        hex_to_bytes(ra_hex),
+        hex_to_bytes(rb_hex),
+        id_fixed(ida),
+        id_fixed(idb),
+        std::vector<unsigned char>(nonce.begin(), nonce.end())});
+    return bytes_to_hex(sm3(z));
 }
 
 std::string CryptoUtils::hmac_sm3_hex(const std::string& key_hex, const std::string& data_hex) {
@@ -315,24 +382,13 @@ BIGNUM* CryptoUtils::compute_lambda(const EC_POINT* wa, const std::vector<unsign
     return BN_bin2bn(d.data(), static_cast<int>(d.size()), nullptr);
 }
 
-std::vector<unsigned char> CryptoUtils::transcript(const std::string& ra_hex, const std::string& id,
-                                                   const std::string& wb_hex, const std::string& nonce) const {
-    auto ra = hex_to_bytes(ra_hex);
-    auto wb = hex_to_bytes(wb_hex);
-    std::vector<unsigned char> out;
-    auto append_len = [&](std::size_t len) {
-        out.push_back(static_cast<unsigned char>((len >> 8) & 0xff));
-        out.push_back(static_cast<unsigned char>(len & 0xff));
-    };
-    append_len(ra.size());
-    out.insert(out.end(), ra.begin(), ra.end());
-    append_len(id.size());
-    out.insert(out.end(), id.begin(), id.end());
-    append_len(wb.size());
-    out.insert(out.end(), wb.begin(), wb.end());
-    append_len(nonce.size());
-    out.insert(out.end(), nonce.begin(), nonce.end());
-    return out;
+// 签名 transcript = R_cloud ‖ R_pile ‖ ID_signer ‖ W_signer ‖ nonce（每段 2 字节大端长度前缀）
+std::string CryptoUtils::random_bytes_hex(int n_bytes) {
+    std::vector<unsigned char> buf(static_cast<std::size_t>(n_bytes));
+    if (RAND_bytes(buf.data(), n_bytes) != 1) {
+        throw std::runtime_error("随机数生成失败");
+    }
+    return bytes_to_hex(buf);
 }
 
 // ---------------------------- 点 / 编码辅助 ----------------------------
