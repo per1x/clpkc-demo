@@ -25,7 +25,7 @@ import org.bouncycastle.math.ec.ECPoint;
  *
  * <p>WA=wG+UA，tA=(w+λ·ms) mod n，dA=tA+ua，PA=WA+λ·Ppub；
  * HA=SM3(len2B(id)‖id‖a‖b‖Gx‖Gy‖PpubX‖PpubY)，λ=SM3(WAx‖WAy‖HA)。
- * SM2 公钥加密（C1C3C2 原始拼接）、SM2 数字签名（DER）、HMAC-SM3。</p>
+ * SM2 公钥加密（C1C3C2 原始拼接）、SM2 数字签名（线上裸 r‖s，64 字节）、HMAC-SM3。</p>
  */
 public final class ClpkcCrypto {
 
@@ -160,7 +160,7 @@ public final class ClpkcCrypto {
     }
 
     // ------------------------------------------------------------------
-    // SM2 签名 / 验签（DER；id 作 ZA 用户标识；transcript 绑 nonce）
+    // SM2 签名 / 验签（线上裸 r‖s 64 字节；id 作 ZA 用户标识；transcript 绑 nonce）
     // ------------------------------------------------------------------
 
     /** 发起方（桩）签名：transcript = R_B ‖ ID_B ‖ W_B ‖ nonce（发起时尚无 R_A，只签自己的）。 */

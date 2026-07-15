@@ -382,7 +382,7 @@ BIGNUM* CryptoUtils::compute_lambda(const EC_POINT* wa, const std::vector<unsign
     return BN_bin2bn(d.data(), static_cast<int>(d.size()), nullptr);
 }
 
-// 签名 transcript = R_cloud ‖ R_pile ‖ ID_signer ‖ W_signer ‖ nonce（每段 2 字节大端长度前缀）
+// 生成 n 字节随机数并返回 hex（握手 nonce 用，CSPRNG）
 std::string CryptoUtils::random_bytes_hex(int n_bytes) {
     std::vector<unsigned char> buf(static_cast<std::size_t>(n_bytes));
     if (RAND_bytes(buf.data(), n_bytes) != 1) {

@@ -29,8 +29,8 @@ import com.clpkc.cloud.service.PileDirectory;
  *       用声明公钥重构 PA 验签 → 返回签名的 {@code ka_response} → 双方派生会话密钥。</li>
  * </ul>
  *
- * <p>云平台每次连接都先下发 challenge(nonce)——nonce 是本次会话的新鲜随机数，用于绑定签名防重放，
- * 两个阶段都需要；但 HMAC 认证与部分私钥申请只在第一阶段发生。</p>
+ * <p>桩（主机）发起，云不下发 challenge——nonce 由桩自生成（本次会话的新鲜随机数，绑定签名防重放），
+ * 随桩的首报文发来，云只复用不重新生成，两个阶段都用；HMAC 认证与部分私钥申请只在第一阶段发生。</p>
  */
 public final class PileSessionHandler implements Runnable {
 
