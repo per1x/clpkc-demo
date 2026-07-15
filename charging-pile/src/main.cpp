@@ -117,7 +117,7 @@ void session(const PileConfig& cfg, CryptoUtils& crypto, const PileKeystore& ks)
     }
     LOG_INFO("第二阶段: 云平台签名校验通过。");
 
-    // SK = KDF(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)
+    // SK = SM3(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)
     std::string session_key = crypto.derive_session_key(
         eph.secret_hex, r_a, r_a, eph.public_hex, cloud_id, ks.id, nonce);
     if (session_key.size() != 64) {

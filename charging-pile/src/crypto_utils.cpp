@@ -188,7 +188,8 @@ std::string CryptoUtils::sm2_decrypt_c1c3c2(const std::string& cipher_hex, const
 }
 
 // ---------------------------------------------------------------------------
-// SM2 签名 / 验签（EVP，DER，id 作 ZA）
+// SM2 签名 / 验签（内部走 OpenSSL EVP，签名内部为 DER；对外线上格式为裸 r‖s 64 字节，
+// 由 ecdsa_der_to_raw / ecdsa_raw_to_der 在边界互转；id 作 ZA 用户标识）
 // ---------------------------------------------------------------------------
 // 全定长字段直拼，无长度前缀
 std::vector<unsigned char> CryptoUtils::build_transcript(const std::vector<std::vector<unsigned char>>& fields) {
@@ -260,18 +261,18 @@ std::string CryptoUtils::sm2_sign(const std::vector<unsigned char>& msg, const s
 // 验响应方（云）签名：transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce
 bool CryptoUtils::verify_responder(const std::string& r_a_hex, const std::string& r_b_hex,
                                    const std::string& id, const std::string& w_hex, const std::string& nonce,
-                                   const std::string& sig_der_hex, const std::string& full_public_hex) {
+                                   const std::string& sig_raw_hex, const std::string& full_public_hex) {
     auto msg = build_transcript({
         hex_to_bytes(r_a_hex),
         hex_to_bytes(r_b_hex),
         id_fixed(id),
         hex_to_bytes(w_hex),
         std::vector<unsigned char>(nonce.begin(), nonce.end())});
-    return sm2_verify(msg, id, sig_der_hex, full_public_hex);
+    return sm2_verify(msg, id, sig_raw_hex, full_public_hex);
 }
 
 bool CryptoUtils::sm2_verify(const std::vector<unsigned char>& msg, const std::string& id,
-                             const std::string& sig_der_hex, const std::string& full_public_hex) {
+                             const std::string& sig_raw_hex, const std::string& full_public_hex) {
     try {
         PointPtr pa(point_from_xy_hex(full_public_hex), EC_POINT_free);
         auto pa_sec1 = point_to_sec1(pa.get());
@@ -289,7 +290,7 @@ bool CryptoUtils::sm2_verify(const std::vector<unsigned char>& msg, const std::s
         EVP_MD_CTX_set_pkey_ctx(mctx, pctx);
         std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> mctx_guard(mctx, EVP_MD_CTX_free);
 
-        auto sig = ecdsa_raw_to_der(hex_to_bytes(sig_der_hex));  // 裸 r‖s 64 字节 → DER
+        auto sig = ecdsa_raw_to_der(hex_to_bytes(sig_raw_hex));  // 裸 r‖s 64 字节 → DER
         if (EVP_DigestVerifyInit(mctx, nullptr, EVP_sm3(), nullptr, pkey) <= 0
             || EVP_DigestVerifyUpdate(mctx, msg.data(), msg.size()) <= 0) {
             return false;

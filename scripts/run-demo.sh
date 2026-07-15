@@ -4,8 +4,14 @@
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
-RUN_DIR="${RUN_DIR:-/tmp/clpkc-run}"
-JAVA="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}/bin/java"
+RUN_DIR="${RUN_DIR:-${TMPDIR:-/tmp}/clpkc-run}"
+# JDK：优先 JAVA_HOME，否则用 PATH 上的 java（跨平台，不写死 macOS Homebrew 路径）。
+if [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/java" ]; then
+  JAVA="${JAVA_HOME}/bin/java"
+else
+  JAVA="$(command -v java || true)"
+fi
+[ -n "$JAVA" ] || { echo "[脚本] 找不到 java，请设置 JAVA_HOME 或把 java 加入 PATH"; exit 1; }
 mkdir -p "$RUN_DIR"
 
 KGC_JAR="$ROOT/kgc-service/target/kgc-service.jar"

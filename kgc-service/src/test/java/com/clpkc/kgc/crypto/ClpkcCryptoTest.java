@@ -55,7 +55,7 @@ class ClpkcCryptoTest {
         // 篡改 nonce 应验签失败
         assertFalse(crypto.verifyResponder(rA, rB, cloudId, Hex.decode(cloudPk.claimedPublicHex()), nonce + "00", sigCloud, cloudPub));
 
-        // SK = KDF(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)
+        // SK = SM3(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)
         String skPile = crypto.deriveSessionKey(ephPile.secretScalar(), ephCloud.publicKeyHex(),
             rA, rB, cloudId, pileId, nonce);
         String skCloud = crypto.deriveSessionKey(ephCloud.secretScalar(), ephPile.publicKeyHex(),

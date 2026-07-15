@@ -45,7 +45,7 @@ public:
     // 验响应方（云）签名 transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce
     bool verify_responder(const std::string& r_a_hex, const std::string& r_b_hex,
                           const std::string& id, const std::string& w_hex, const std::string& nonce,
-                          const std::string& sig_der_hex, const std::string& full_public_hex);
+                          const std::string& sig_raw_hex, const std::string& full_public_hex);
 
     // 生成 n 字节随机数并返回 hex（握手 nonce 用，CSPRNG）
     std::string random_bytes_hex(int n_bytes);
@@ -73,7 +73,7 @@ private:
     std::string sm2_sign(const std::vector<unsigned char>& msg, const std::string& id,
                          const std::string& full_private_hex);
     bool sm2_verify(const std::vector<unsigned char>& msg, const std::string& id,
-                    const std::string& sig_der_hex, const std::string& full_public_hex);
+                    const std::string& sig_raw_hex, const std::string& full_public_hex);
 
     // 点 ↔ x‖y（64 字节 / 128 hex），带曲线校验
     std::string point_to_xy_hex(const EC_POINT* point) const;

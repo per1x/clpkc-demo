@@ -142,7 +142,7 @@ public final class PileSessionHandler implements Runnable {
             "rA", rAHex,
             "sig", sig));
 
-        // SK = KDF(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)
+        // SK = SM3(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)
         String sessionKey = crypto.deriveSessionKey(cloudEph.secretScalar(),
             rBHex, Hex.decode(rAHex), Hex.decode(rBHex),
             identity.id(), pileId, nonceHex);
