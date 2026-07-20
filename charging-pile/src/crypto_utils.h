@@ -56,6 +56,9 @@ public:
                                    const std::string& nonce);
 
     std::string hmac_sm3_hex(const std::string& key_hex, const std::string& data_hex);
+    // 常量时间校验 HMAC-SM3（第一阶段双向挑战应答，验云端 MAC 用）
+    bool hmac_sm3_verify(const std::string& key_hex, const std::string& data_hex,
+                         const std::string& expected_mac_hex);
     std::string sm3_hex_of_ascii(const std::string& ascii) const;
 
 private:

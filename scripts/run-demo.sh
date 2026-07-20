@@ -5,13 +5,29 @@ set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 RUN_DIR="${RUN_DIR:-${TMPDIR:-/tmp}/clpkc-run}"
-# JDK：优先 JAVA_HOME，否则用 PATH 上的 java（跨平台，不写死 macOS Homebrew 路径）。
-if [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/java" ]; then
-  JAVA="${JAVA_HOME}/bin/java"
-else
-  JAVA="$(command -v java || true)"
+# JDK17 定位（跨平台，不写死路径）：按候选顺序取第一个主版本 >= 17 的 java。
+# 注意 macOS 的 `java_home -v 17` 在没有 17 时会回退到其它版本，故一律实测版本号。
+java_major() {  # <java-bin> -> 主版本号（Java 8 输出 "1.8.0_x" 归一化为 8）
+  [ -x "$1" ] || return 1
+  "$1" -version 2>&1 | head -1 \
+    | sed -E 's/.*version "([0-9]+)\.?([0-9]*).*/\1 \2/' \
+    | awk '{print ($1==1)?$2:$1}'
+}
+JAVA=""
+for cand in \
+  "${JAVA_HOME:-}/bin/java" \
+  "$([ -x /usr/libexec/java_home ] && /usr/libexec/java_home -v 17 2>/dev/null)/bin/java" \
+  /opt/homebrew/opt/openjdk@17/bin/java \
+  /usr/lib/jvm/java-17-openjdk-*/bin/java \
+  "$(command -v java || true)"; do
+  m="$(java_major "$cand" 2>/dev/null || true)"
+  if [ -n "$m" ] && [ "$m" -ge 17 ] 2>/dev/null; then JAVA="$cand"; break; fi
+done
+if [ -z "$JAVA" ]; then
+  echo "[脚本] 未找到 JDK 17+（本项目 jar 需要 JDK 17+）。请设置 JAVA_HOME 指向 JDK17 后重试。"
+  exit 1
 fi
-[ -n "$JAVA" ] || { echo "[脚本] 找不到 java，请设置 JAVA_HOME 或把 java 加入 PATH"; exit 1; }
+echo "[脚本] 使用 JDK: $JAVA (major $(java_major "$JAVA"))"
 mkdir -p "$RUN_DIR"
 
 KGC_JAR="$ROOT/kgc-service/target/kgc-service.jar"

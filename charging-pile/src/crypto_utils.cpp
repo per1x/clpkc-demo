@@ -337,6 +337,15 @@ std::string CryptoUtils::hmac_sm3_hex(const std::string& key_hex, const std::str
     return bytes_to_hex(out);
 }
 
+bool CryptoUtils::hmac_sm3_verify(const std::string& key_hex, const std::string& data_hex,
+                                  const std::string& expected_mac_hex) {
+    std::string actual = hmac_sm3_hex(key_hex, data_hex);
+    if (actual.size() != expected_mac_hex.size()) {
+        return false;
+    }
+    return CRYPTO_memcmp(actual.data(), expected_mac_hex.data(), actual.size()) == 0;
+}
+
 std::string CryptoUtils::sm3_hex_of_ascii(const std::string& ascii) const {
     std::vector<unsigned char> bytes(ascii.begin(), ascii.end());
     return bytes_to_hex(sm3(bytes));

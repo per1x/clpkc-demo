@@ -7,6 +7,7 @@ import java.io.OutputStreamWriter;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -23,19 +24,24 @@ import com.clpkc.cloud.service.PileDirectory;
  * 处理单个充电桩长连接。<b>按报文类型分流两个阶段</b>：
  *
  * <ul>
- *   <li><b>第一阶段（provision，仅首次）</b>：桩发 {@code hmac} → HMAC 认证 → 转发 KGC 申请部分私钥。
+ *   <li><b>第一阶段（provision，仅首次）</b>：桩发 {@code hmac} → <b>双向</b> HMAC-SM3 挑战应答
+ *       （4 条报文，双方各出一个 16 字节随机挑战并互验）→ 转发 KGC 申请部分私钥。
  *       桩拿到后本地持久化，之后不再走此阶段。</li>
  *   <li><b>第二阶段（session，每次会话）</b>：桩直接发 {@code ka_request} → 云平台核对桩编号、
  *       用声明公钥重构 PA 验签 → 返回签名的 {@code ka_response} → 双方派生会话密钥。</li>
  * </ul>
  *
- * <p>桩（主机）发起，云不下发 challenge——nonce 由桩自生成（本次会话的新鲜随机数，绑定签名防重放），
- * 随桩的首报文发来，云只复用不重新生成，两个阶段都用；HMAC 认证与部分私钥申请只在第一阶段发生。</p>
+ * <p>两个阶段都由桩（主机）发起，云不下发 challenge。第一阶段用 random_A/random_B 双向挑战应答做
+ * 身份互认；第二阶段的 nonce 由桩自生成（本次会话的新鲜随机数，绑定签名防重放），随桩的首报文发来，
+ * 云只复用不重新生成。HMAC 认证与部分私钥申请只在第一阶段发生。</p>
  */
 public final class PileSessionHandler implements Runnable {
 
     private static final Logger log = LoggerFactory.getLogger(PileSessionHandler.class);
     private static final int MAX_LINE_BYTES = 16 * 1024;
+    /** 第一阶段挑战随机数字节数（random_A / random_B 各 16 字节，每次连接新鲜生成）。 */
+    private static final int CHALLENGE_LEN = 16;
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Socket socket;
     private final CloudIdentity identity;
@@ -77,19 +83,44 @@ public final class PileSessionHandler implements Runnable {
         }
     }
 
-    /** 第一阶段：HMAC 认证 + 转发 KGC 申请部分私钥（仅首次；nonce 由桩生成）。 */
+    /**
+     * 第一阶段：<b>双向</b> HMAC-SM3 挑战应答 + 转发 KGC 申请部分私钥（仅首次）。
+     *
+     * <p>msg1 桩→云 {@code hmac(id, publicKey, randomB)}：桩以 random_B 挑战云；
+     * msg2 云→桩 {@code hmac_challenge(mac=HMAC(PSK,random_B), randomA)}：云自证并反向挑战；
+     * msg3 桩→云 {@code hmac_response(mac=HMAC(PSK,random_A))}：桩应答云的挑战；
+     * msg4 云→桩 {@code auth_ok}：云验通过才放行后续密钥材料下发。
+     * random_A / random_B 每次连接新鲜生成，任一侧校验失败立即中止。</p>
+     */
     private void provision(InputStream in, BufferedWriter writer, String peer,
                            Map<String, String> hmacReq) throws IOException {
-        byte[] nonce = Hex.decode(required(hmacReq, "nonce"));
-        byte[] expected = identity.crypto().hmac(identity.sharedKey(), nonce);
-        String macHex = hmacReq.get("mac");
-        if (macHex == null || !MessageDigest.isEqual(expected, Hex.decode(macHex))) {
-            log.warn("[Cloud][Socket] {} HMAC 校验失败，拒绝。", peer);
+        String pileId = required(hmacReq, "id");
+        byte[] randomB = Hex.decode(required(hmacReq, "randomB"));   // 桩对云的挑战
+
+        // 云用 PSK 应答桩的挑战（自证身份），同时生成自己的挑战 random_A
+        byte[] randomA = new byte[CHALLENGE_LEN];
+        RANDOM.nextBytes(randomA);
+        send(writer, ordered(
+            "type", "hmac_challenge",
+            "id", identity.id(),
+            "mac", Hex.encode(identity.crypto().hmac(identity.sharedKey(), randomB)),
+            "randomA", Hex.encode(randomA)));
+
+        // 桩回 HMAC(PSK, random_A)，云校验；失败即中止，不下发任何密钥材料
+        Map<String, String> authResp = JsonCodec.parse(readLine(in));
+        if (!"hmac_response".equals(authResp.get("type"))) {
+            log.warn("[Cloud][Socket] {} 第一阶段期待 hmac_response，实际: {}", peer, authResp.get("type"));
             send(writer, Map.of("type", "auth_fail"));
             return;
         }
-        String pileId = required(hmacReq, "id");
-        log.info("[Cloud][Socket] {} 第一阶段 HMAC 认证通过，桩 id={}", peer, pileId);
+        byte[] expected = identity.crypto().hmac(identity.sharedKey(), randomA);
+        String macHex = authResp.get("mac");
+        if (macHex == null || !MessageDigest.isEqual(expected, Hex.decode(macHex))) {
+            log.warn("[Cloud][Socket] {} 桩端 HMAC 校验失败，拒绝。", peer);
+            send(writer, Map.of("type", "auth_fail"));
+            return;
+        }
+        log.info("[Cloud][Socket] {} 第一阶段双向 HMAC 认证通过，桩 id={}", peer, pileId);
         send(writer, ordered("type", "auth_ok", "id", identity.id()));
 
         Map<String, String> partialReq = JsonCodec.parse(readLine(in));

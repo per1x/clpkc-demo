@@ -78,7 +78,7 @@ KGC（`kgc-service/src/main/resources/application.properties`）：
 
 **两阶段拆分**：桩（主机）发起，云平台**不再下发 challenge**——桩自生成本次会话的新鲜 `nonce`（16 字节，绑定签名防重放）并随首报文发给云，云只复用不重新生成；云按桩发来的报文类型分流：
 
-- **第一阶段（仅首次，provision）**：桩发 `hmac` → HMAC-SM3 认证 → `partial_key_request` → 云平台转发 KGC → `partial_key_response(claimedPublic WA, partialPrivate, masterPublicKey)`。桩组合 `dA` 后**本地持久化**（`pile-keystore.json`）。
+- **第一阶段（仅首次，provision）**：**双向 HMAC-SM3 挑战应答**（4 条报文）——桩发 `hmac(id, publicKey, randomB)` → 云回 `hmac_challenge(mac=HMAC(PSK,randomB), randomA)` 自证身份并反向挑战 → 桩**验证云的 MAC**（不过即中止）后回 `hmac_response(mac=HMAC(PSK,randomA))` → 云验证通过回 `auth_ok`。随后 `partial_key_request` → 云平台转发 KGC → `partial_key_response(claimedPublic WA, partialPrivate, masterPublicKey)`。桩组合 `dA` 后**本地持久化**（`pile-keystore.json`）。`random_A`/`random_B` 各 16 字节、每次连接新鲜生成。
 - **第二阶段（每次会话，session）**：桩加载本地密钥，直接发 `ka_request(id, claimedPublic, rB, nonce, sig)`（msg1）→ 云平台核对桩编号(见 `PileDirectory`)、重构 `PA` 验发起方签名 → 回 `ka_response`（msg2，含云临时公钥 `rA` 与响应方签名）→ 双方派生会话密钥。**不再走 HMAC、不再申请 KGC。**
 
 密码学细节：

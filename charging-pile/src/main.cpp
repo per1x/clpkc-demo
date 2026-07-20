@@ -12,7 +12,8 @@
 // ============================================================================
 // CL-PKC 充电桩客户端（国密 SM2，隐式证书方案，两阶段）。
 //
-// 第一阶段(provision，仅首次)：HMAC-SM3 认证 → 经云平台向 KGC 申请部分私钥 →
+// 第一阶段(provision，仅首次)：双向 HMAC-SM3 挑战应答（桩出 random_B、云出 random_A，
+//   双方互验 MAC，任一侧失败即中止）→ 经云平台向 KGC 申请部分私钥 →
 //   组合完整私钥 dA=tA+ua → 本地持久化。
 // 第二阶段(session，每次)：加载本地密钥 → 直接带 SM2 签名的 ECDH 协商 → 会话密钥派生。
 //   不再走 HMAC、不再申请 KGC。
@@ -51,19 +52,38 @@ void provision(const PileConfig& cfg, CryptoUtils& crypto) {
     NetClient net(cfg.connect_timeout_ms, cfg.read_timeout_ms);
     net.connect(cfg.cloud_host, cfg.cloud_port);
 
-    // 桩发起：自生成 nonce，直接发 hmac（不再等云 challenge）
-    std::string nonce = crypto.random_bytes_hex(16);
+    // 第一阶段双向挑战应答 msg1：桩生成 random_B（16 字节）挑战云平台
+    std::string random_b = crypto.random_bytes_hex(16);
     send_msg(net, json{
         {"type", "hmac"},
         {"id", cfg.pile_id},
         {"publicKey", static_key.public_hex},
-        {"nonce", nonce},
-        {"mac", crypto.hmac_sm3_hex(cfg.shared_key_hex, nonce)}
+        {"randomB", random_b}
     });
+
+    // msg2：云回 HMAC(PSK, random_B) 自证身份 + 自己的挑战 random_A。桩必须验云的 MAC。
+    json challenge = read_msg(net);
+    if (field(challenge, "type") != "hmac_challenge") {
+        throw std::runtime_error("第一阶段: 云平台未返回挑战应答报文，中止");
+    }
+    if (!crypto.hmac_sm3_verify(cfg.shared_key_hex, random_b, field(challenge, "mac"))) {
+        throw std::runtime_error("第一阶段: 云平台 MAC 校验失败，中止（对端可能不持有预共享密钥）");
+    }
+    LOG_INFO("第一阶段: 云平台身份校验通过（HMAC-SM3 over random_B）。");
+
+    // msg3：桩用 PSK 应答云的挑战 random_A
+    send_msg(net, json{
+        {"type", "hmac_response"},
+        {"id", cfg.pile_id},
+        {"mac", crypto.hmac_sm3_hex(cfg.shared_key_hex, field(challenge, "randomA"))}
+    });
+
+    // msg4：云验桩通过才放行
     json auth = read_msg(net);
     if (field(auth, "type") != "auth_ok") {
-        throw std::runtime_error("HMAC 认证失败");
+        throw std::runtime_error("第一阶段: 桩身份未通过云平台校验，中止");
     }
+    LOG_INFO("第一阶段: 双向 HMAC 认证通过。");
     send_msg(net, json{
         {"type", "partial_key_request"},
         {"id", cfg.pile_id},
