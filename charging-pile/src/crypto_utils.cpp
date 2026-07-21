@@ -121,11 +121,11 @@ std::string CryptoUtils::compose_full_private(const std::string& secret_hex, con
     return bn_to_fixed_hex(out.get());
 }
 
-std::string CryptoUtils::reconstruct_full_public(const std::string& id, const std::string& claimed_public_hex,
+std::string CryptoUtils::reconstruct_full_public(const std::string& id_hex, const std::string& claimed_public_hex,
                                                  const std::string& master_public_hex) {
     PointPtr wa(point_from_xy_hex(claimed_public_hex), EC_POINT_free);
     PointPtr ppub(point_from_xy_hex(master_public_hex), EC_POINT_free);
-    auto ha = compute_ha(id, master_public_hex);
+    auto ha = compute_ha(hex_fixed(id_hex, 32, "ID"), master_public_hex);
     BnPtr lambda(compute_lambda(wa.get(), ha), BN_free);
     PointPtr tmp(EC_POINT_new(group_), EC_POINT_free);
     EC_POINT_mul(group_, tmp.get(), nullptr, ppub.get(), lambda.get(), ctx_);  // λ·Ppub
@@ -213,31 +213,67 @@ std::vector<unsigned char> CryptoUtils::build_transcript(const std::vector<std::
     return out;
 }
 
-// ID 定长编码：32 字节，右侧 0x00 补齐；**超长直接报错**（不再截断，避免不同 ID 截断后碰撞）
-std::vector<unsigned char> CryptoUtils::id_fixed(const std::string& id) {
-    const std::size_t ID_FIXED_LEN = 32;
-    if (id.size() > ID_FIXED_LEN) {
-        throw std::runtime_error("ID 超过 32 字节上限，实际 " + std::to_string(id.size())
-                                 + " 字节: " + id);
+// 桩 ID_B：7 字节 BCD 主机编号 ‖ 25 字节 0x00。
+// host_no_decimal 为十进制数字串（≤14 位），不足 14 位**左侧补 '0'**（保持数值不变）。
+std::string CryptoUtils::id_hex_from_bcd(const std::string& host_no_decimal) {
+    const std::size_t BCD_DIGITS = 14;
+    if (host_no_decimal.empty() || host_no_decimal.size() > BCD_DIGITS) {
+        throw std::runtime_error("主机编号必须为 1..14 位十进制数字，实际 "
+                                 + std::to_string(host_no_decimal.size()) + " 位");
     }
-    std::vector<unsigned char> out(ID_FIXED_LEN, 0x00);
-    std::memcpy(out.data(), id.data(), id.size());
-    return out;
+    for (char c : host_no_decimal) {
+        if (c < '0' || c > '9') {
+            throw std::runtime_error(std::string("主机编号必须全为十进制数字，遇到 '") + c + "'");
+        }
+    }
+    std::string d(BCD_DIGITS - host_no_decimal.size(), '0');  // 左侧补 '0' 到 14 位
+    d += host_no_decimal;
+    std::vector<unsigned char> out(32, 0x00);
+    for (std::size_t i = 0; i < BCD_DIGITS / 2; i++) {
+        out[i] = static_cast<unsigned char>(((d[2 * i] - '0') << 4) | (d[2 * i + 1] - '0'));
+    }
+    static const char* digits = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(64);
+    for (unsigned char b : out) {
+        hex.push_back(digits[b >> 4]);
+        hex.push_back(digits[b & 0x0f]);
+    }
+    return hex;
+}
+
+// 云 ID_A：域名 ASCII 字节 ‖ 0x00 补齐到 32 字节（超长报错）
+std::string CryptoUtils::id_hex_from_ascii(const std::string& ascii) {
+    if (ascii.size() > 32) {
+        throw std::runtime_error("ID 超过 32 字节上限，实际 " + std::to_string(ascii.size()) + " 字节");
+    }
+    std::vector<unsigned char> out(32, 0x00);
+    std::memcpy(out.data(), ascii.data(), ascii.size());
+    static const char* digits = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(64);
+    for (unsigned char b : out) {
+        hex.push_back(digits[b >> 4]);
+        hex.push_back(digits[b & 0x0f]);
+    }
+    return hex;
 }
 
 // 发起方（桩）签名：transcript = R_B ‖ ID_B ‖ W_B ‖ nonce（全定长直拼）
-std::string CryptoUtils::sign_initiator(const std::string& r_pile_hex, const std::string& id,
+std::string CryptoUtils::sign_initiator(const std::string& r_pile_hex, const std::string& id_hex,
                                         const std::string& w_hex, const std::string& nonce,
                                         const std::string& full_private_hex) {
+    auto id32 = hex_fixed(id_hex, 32, "ID_B");
     auto msg = build_transcript({
         hex_fixed(r_pile_hex, 64, "R_B"),
-        id_fixed(id),
+        id32,
         hex_fixed(w_hex, 64, "W_B"),
         hex_fixed(nonce, 16, "nonce")});
-    return sm2_sign(msg, id, full_private_hex);
+    return sm2_sign(msg, id32, full_private_hex);
 }
 
-std::string CryptoUtils::sm2_sign(const std::vector<unsigned char>& msg, const std::string& id,
+std::string CryptoUtils::sm2_sign(const std::vector<unsigned char>& msg,
+                                  const std::vector<unsigned char>& id32,
                                   const std::string& full_private_hex) {
     BnPtr sk(hex_to_bn(full_private_hex), BN_free);
     PointPtr pub(EC_POINT_new(group_), EC_POINT_free);
@@ -253,8 +289,7 @@ std::string CryptoUtils::sm2_sign(const std::vector<unsigned char>& msg, const s
         if (pctx) EVP_PKEY_CTX_free(pctx);
         throw std::runtime_error("SM2 sign ctx 创建失败");
     }
-    auto id32 = id_fixed(id);  // ZA 用户标识统一 32 字节零补齐（ENTL=0x0100）
-    EVP_PKEY_CTX_set1_id(pctx, id32.data(), static_cast<int>(id32.size()));
+    EVP_PKEY_CTX_set1_id(pctx, id32.data(), static_cast<int>(id32.size()));  // ZA，ENTL=0x0100
     EVP_MD_CTX_set_pkey_ctx(mctx, pctx);
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> mctx_guard(mctx, EVP_MD_CTX_free);
 
@@ -274,22 +309,24 @@ std::string CryptoUtils::sm2_sign(const std::vector<unsigned char>& msg, const s
 
 // 验响应方（云）签名：transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce
 bool CryptoUtils::verify_responder(const std::string& r_a_hex, const std::string& r_b_hex,
-                                   const std::string& id, const std::string& w_hex, const std::string& nonce,
+                                   const std::string& id_hex, const std::string& w_hex, const std::string& nonce,
                                    const std::string& sig_raw_hex, const std::string& full_public_hex) {
     try {
+        auto id32 = hex_fixed(id_hex, 32, "ID_A");
         auto msg = build_transcript({
             hex_fixed(r_a_hex, 64, "R_A"),
             hex_fixed(r_b_hex, 64, "R_B"),
-            id_fixed(id),
+            id32,
             hex_fixed(w_hex, 64, "W_A"),
             hex_fixed(nonce, 16, "nonce")});
-        return sm2_verify(msg, id, sig_raw_hex, full_public_hex);
+        return sm2_verify(msg, id32, sig_raw_hex, full_public_hex);
     } catch (const std::exception&) {
         return false;  // 验签语义：入参非法与签名不匹配一律返回 false，不抛异常
     }
 }
 
-bool CryptoUtils::sm2_verify(const std::vector<unsigned char>& msg, const std::string& id,
+bool CryptoUtils::sm2_verify(const std::vector<unsigned char>& msg,
+                             const std::vector<unsigned char>& id32,
                              const std::string& sig_raw_hex, const std::string& full_public_hex) {
     try {
         PointPtr pa(point_from_xy_hex(full_public_hex), EC_POINT_free);
@@ -304,8 +341,7 @@ bool CryptoUtils::sm2_verify(const std::vector<unsigned char>& msg, const std::s
             if (pctx) EVP_PKEY_CTX_free(pctx);
             return false;
         }
-        auto id32 = id_fixed(id);  // ZA 用户标识统一 32 字节零补齐（ENTL=0x0100）
-        EVP_PKEY_CTX_set1_id(pctx, id32.data(), static_cast<int>(id32.size()));
+        EVP_PKEY_CTX_set1_id(pctx, id32.data(), static_cast<int>(id32.size()));  // ZA，ENTL=0x0100
         EVP_MD_CTX_set_pkey_ctx(mctx, pctx);
         std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> mctx_guard(mctx, EVP_MD_CTX_free);
 
@@ -325,7 +361,7 @@ bool CryptoUtils::sm2_verify(const std::vector<unsigned char>& msg, const std::s
 // ---------------------------------------------------------------------------
 std::string CryptoUtils::derive_session_key(const std::string& eph_secret_hex, const std::string& peer_point_hex,
                                             const std::string& ra_hex, const std::string& rb_hex,
-                                            const std::string& ida, const std::string& idb,
+                                            const std::string& ida_hex, const std::string& idb_hex,
                                             const std::string& nonce) {
     BnPtr a(hex_to_bn(eph_secret_hex), BN_free);
     PointPtr peer(point_from_xy_hex(peer_point_hex), EC_POINT_free);
@@ -340,8 +376,8 @@ std::string CryptoUtils::derive_session_key(const std::string& eph_secret_hex, c
         coord_bytes(sx.get()),  // Sx 恒 32 字节（BN_bn2binpad 定长零填充）
         hex_fixed(ra_hex, 64, "R_A"),
         hex_fixed(rb_hex, 64, "R_B"),
-        id_fixed(ida),
-        id_fixed(idb),
+        hex_fixed(ida_hex, 32, "ID_A"),
+        hex_fixed(idb_hex, 32, "ID_B"),
         hex_fixed(nonce, 16, "nonce")});
     return bytes_to_hex(sm3(z));
 }
@@ -373,9 +409,10 @@ std::string CryptoUtils::sm3_hex(const std::string& data_hex) const {
 // ---------------------------------------------------------------------------
 // HA / λ
 // ---------------------------------------------------------------------------
-std::vector<unsigned char> CryptoUtils::compute_ha(const std::string& id, const std::string& master_public_hex) const {
-    // ID 统一 32 字节零补齐 → ENTL 恒为 256 bit（0x0100）。与 transcript/KDF/ZA 一致。
-    std::vector<unsigned char> idb = id_fixed(id);
+std::vector<unsigned char> CryptoUtils::compute_ha(const std::vector<unsigned char>& id32,
+                                                  const std::string& master_public_hex) const {
+    // ID 统一 32 字节 → ENTL 恒为 256 bit（0x0100）。与 transcript/KDF/ZA 一致。
+    const std::vector<unsigned char>& idb = id32;
     unsigned int lenBits = static_cast<unsigned int>(idb.size()) * 8;  // = 256
     std::vector<unsigned char> input = {static_cast<unsigned char>((lenBits >> 8) & 0xff),
                                         static_cast<unsigned char>(lenBits & 0xff)};

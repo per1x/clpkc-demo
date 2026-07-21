@@ -43,8 +43,8 @@ PileConfig PileConfig::load(const std::string& path) {
             }
             std::string key = trim(s.substr(0, eq));
             std::string val = trim(s.substr(eq + 1));
-            if (key == "pile.id") {
-                cfg.pile_id = val;
+            if (key == "pile.host_no") {
+                cfg.host_no = val;
             } else if (key == "cloud.host") {
                 cfg.cloud_host = val;
             } else if (key == "cloud.port") {
@@ -65,7 +65,7 @@ PileConfig PileConfig::load(const std::string& path) {
     }
 
     // 环境变量覆盖
-    cfg.pile_id = env_or("CLPKC_PILE_ID", cfg.pile_id);
+    cfg.host_no = env_or("CLPKC_PILE_HOST_NO", cfg.host_no);
     cfg.cloud_host = env_or("CLPKC_CLOUD_HOST", cfg.cloud_host);
     cfg.cloud_port = std::stoi(env_or("CLPKC_CLOUD_PORT", std::to_string(cfg.cloud_port)));
     cfg.shared_key_hex = env_or("CLPKC_SHARED_KEY_HEX", cfg.shared_key_hex);

@@ -37,7 +37,7 @@ public class CloudIdentity {
     private String masterPublicHex;     // Ppub
 
     public CloudIdentity(KgcClient kgcClient,
-                         @Value("${clpkc.cloud.id:cloud-001}") String id,
+                         @Value("${clpkc.cloud.id:cloud.example.com}") String id,
                          @Value("${clpkc.cloud.static-secret-hex:}") String staticSecretHex,
                          @Value("${clpkc.cloud.shared-key-hex:}") String sharedKeyHex) {
         this.kgcClient = kgcClient;
@@ -95,7 +95,8 @@ public class CloudIdentity {
             if (ready) {
                 return;
             }
-            this.id = configuredId;
+            // ID_A = 域名 ASCII ‖ 0x00 补齐到 32 字节；对外一律传 64 字符 hex
+            this.id = ClpkcCrypto.idHexFromAscii(configuredId);
             BigInteger ua = loadStaticSecret(staticSecretHex);
             String uaHex = crypto.curve().xyHex(crypto.curve().basePointMul(ua));
 
@@ -105,8 +106,8 @@ public class CloudIdentity {
             this.fullPrivate = crypto.composeFullPrivate(ua, resp.get("partialPrivate"));
             this.fullPublicHex = crypto.reconstructFullPublicHex(id, claimedPublicHex, masterPublicHex);
             this.ready = true;
-            log.info("[Cloud] 身份就绪：id={}, 声明公钥 WA_c={}, 完整公钥 PK_c={}",
-                id, claimedPublicHex, fullPublicHex);
+            log.info("[Cloud] 身份就绪：域名={} → ID_A(32B hex)={}, 声明公钥 WA_c={}, 完整公钥 PK_c={}",
+                configuredId, id, claimedPublicHex, fullPublicHex);
         }
     }
 

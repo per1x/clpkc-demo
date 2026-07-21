@@ -46,6 +46,9 @@ std::string field(const json& j, const char* key) {
 
 // 第一阶段：申请无证书密钥对并落地
 void provision(const PileConfig& cfg, CryptoUtils& crypto) {
+    // ID_B = 7 字节 BCD 主机编号 ‖ 25 字节 0x00；线上一律传 64 字符 hex
+    const std::string id_hex = CryptoUtils::id_hex_from_bcd(cfg.host_no);
+    LOG_INFO("第一阶段: 主机编号 " + cfg.host_no + " → ID_B(32B hex) = " + id_hex);
     KeyMaterial static_key = crypto.generate_static_key();  // (ua, UA)
     LOG_INFO("第一阶段: 本地公钥 UA = " + static_key.public_hex);
 
@@ -56,7 +59,7 @@ void provision(const PileConfig& cfg, CryptoUtils& crypto) {
     std::string random_b = crypto.random_bytes_hex(16);
     send_msg(net, json{
         {"type", "hmac"},
-        {"id", cfg.pile_id},
+        {"id", id_hex},
         {"publicKey", static_key.public_hex},
         {"randomB", random_b}
     });
@@ -74,7 +77,7 @@ void provision(const PileConfig& cfg, CryptoUtils& crypto) {
     // msg3：桩用 PSK 应答云的挑战 random_A
     send_msg(net, json{
         {"type", "hmac_response"},
-        {"id", cfg.pile_id},
+        {"id", id_hex},
         {"mac", crypto.hmac_sm3_hex(cfg.shared_key_hex, field(challenge, "randomA"))}
     });
 
@@ -86,12 +89,12 @@ void provision(const PileConfig& cfg, CryptoUtils& crypto) {
     LOG_INFO("第一阶段: 双向 HMAC 认证通过。");
     send_msg(net, json{
         {"type", "partial_key_request"},
-        {"id", cfg.pile_id},
+        {"id", id_hex},
         {"publicKey", static_key.public_hex}
     });
     json partial = read_msg(net);
     PileKeystore ks;
-    ks.id = cfg.pile_id;
+    ks.id = id_hex;
     ks.ua_secret_hex = static_key.secret_hex;
     ks.claimed_public_hex = field(partial, "claimedPublic");
     ks.master_public_hex = field(partial, "masterPublicKey");

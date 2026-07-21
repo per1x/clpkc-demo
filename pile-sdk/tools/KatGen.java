@@ -23,14 +23,17 @@ public final class KatGen {
     static final String EPH_A_HEX = "4455667788990011223344556677889900112233445566778899001122334455";
     static final String NONCE_HEX = "0102030405060708090a0b0c0d0e0f10";
     static final String PSK_HEX   = "00112233445566778899aabbccddeeff";
-    static final String ID_PILE   = "pile-001";
-    static final String ID_CLOUD  = "cloud-001";
+    // ID 现为 32 字节（64 hex）：桩=7B BCD 主机编号‖25B 0x00，云=域名 ASCII‖0x00 补齐
+    static final String HOST_NO   = "00000000000001";
+    static final String DOMAIN    = "cloud.example.com";
+    static final String ID_PILE   = ClpkcCrypto.idHexFromBcd(HOST_NO);
+    static final String ID_CLOUD  = ClpkcCrypto.idHexFromAscii(DOMAIN);
 
     // 冻结进 kat.md 的值（issuePartialKey 含随机 w，故固定下来供反向验签复现）
     static final String FROZEN_W_PILE =
-        "e19562f61b4a2befece57ae868322b80b97ee8bcf32e600524446636ffc5b1419edf41dc326d04460fff721d3a77103ff0446a412069d3e473ab57a0ed7e9d88";
+        "c40387e9a0d933cfe840e343ec6df4d227c9901654cdac8186cd1825e4958da5030a5b74e617f483ef688d8b01e6dbd8ae2f6ed102decea8e8b4367f714e6ca9";
     static final String FROZEN_PK_PILE =
-        "e05de511ca340f30dfa686f98a4b4fbf0f8c080b22ce7527e8640805db3dbb40d7d421d170566b7e0f550458ce8046092f6be3164c32bfc2080ab392b0182d23";
+        "ff7c8b38fc23a5412401d4e6f1778cd6e77c3968d0cb3affa25c5e3a4fa539f4b40e16da369641f9a7a6aa91b2046c3506e9f6b02f756bc76f473c462819338e";
 
     public static void main(String[] args) {
         ClpkcCrypto crypto = new ClpkcCrypto();
@@ -48,6 +51,8 @@ public final class KatGen {
         String rB = curve.xyHex(curve.basePointMul(ephB));
         String rA = curve.xyHex(curve.basePointMul(ephA));
 
+        p("id_pile", ID_PILE);
+        p("id_cloud", ID_CLOUD);
         p("ppub", ppub);
         p("ua_pub_pile", uaPubPile);
         p("ua_pub_cloud", uaPubCloud);

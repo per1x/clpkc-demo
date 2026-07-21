@@ -33,20 +33,27 @@ public:
     CryptoUtils(const CryptoUtils&) = delete;
     CryptoUtils& operator=(const CryptoUtils&) = delete;
 
+    // ---- ID 构造（ID 一律 32 字节；线上/接口一律传 64 字符 hex）----
+    // 桩 ID_B：7 字节 BCD 主机编号 ‖ 25 字节 0x00。
+    //   host_no_decimal 为十进制数字串（≤14 位），不足 14 位**左侧补 '0'**（保持数值不变）。
+    static std::string id_hex_from_bcd(const std::string& host_no_decimal);
+    // 云 ID_A：域名 ASCII 字节 ‖ 0x00 补齐到 32 字节。
+    static std::string id_hex_from_ascii(const std::string& ascii);
+
     KeyMaterial generate_static_key();
     // dA = (tA + ua) mod n（tA 来自 SM2 解密的部分私钥密文）
     std::string compose_full_private(const std::string& secret_hex, const std::string& encrypted_partial_hex);
-    // PA = WA + λ·Ppub
-    std::string reconstruct_full_public(const std::string& id, const std::string& claimed_public_hex,
+    // PA = WA + λ·Ppub（id_hex = 32 字节 ID 的 64 字符 hex）
+    std::string reconstruct_full_public(const std::string& id_hex, const std::string& claimed_public_hex,
                                         const std::string& master_public_hex);
 
     // 发起方（桩）签名 transcript = R_B ‖ ID_B ‖ W_B ‖ nonce
-    std::string sign_initiator(const std::string& r_pile_hex, const std::string& id,
+    std::string sign_initiator(const std::string& r_pile_hex, const std::string& id_hex,
                                const std::string& w_hex, const std::string& nonce,
                                const std::string& full_private_hex);
     // 验响应方（云）签名 transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce
     bool verify_responder(const std::string& r_a_hex, const std::string& r_b_hex,
-                          const std::string& id, const std::string& w_hex, const std::string& nonce,
+                          const std::string& id_hex, const std::string& w_hex, const std::string& nonce,
                           const std::string& sig_raw_hex, const std::string& full_public_hex);
 
     // 生成 n 字节随机数并返回 hex（握手 nonce 用，CSPRNG）
@@ -54,7 +61,7 @@ public:
 
     std::string derive_session_key(const std::string& eph_secret_hex, const std::string& peer_point_hex,
                                    const std::string& ra_hex, const std::string& rb_hex,
-                                   const std::string& ida, const std::string& idb,
+                                   const std::string& ida_hex, const std::string& idb_hex,
                                    const std::string& nonce);
 
     std::string hmac_sm3_hex(const std::string& key_hex, const std::string& data_hex);
@@ -66,18 +73,17 @@ public:
 private:
     // 手动 SM2 C1C3C2 解密（明文返回 hex）
     std::string sm2_decrypt_c1c3c2(const std::string& cipher_hex, const std::string& secret_hex);
-    std::vector<unsigned char> compute_ha(const std::string& id, const std::string& master_public_hex) const;
+    std::vector<unsigned char> compute_ha(const std::vector<unsigned char>& id32,
+                                          const std::string& master_public_hex) const;
     // λ = SM3(WAx‖WAy‖HA) 作大整数
     BIGNUM* compute_lambda(const EC_POINT* wa, const std::vector<unsigned char>& ha) const;
 
     // 通用：把有序定长字节字段直接拼接（无长度前缀）
     static std::vector<unsigned char> build_transcript(const std::vector<std::vector<unsigned char>>& fields);
-    // ID 定长编码：32 字节，右侧 0x00 补齐，超长截断并告警
-    static std::vector<unsigned char> id_fixed(const std::string& id);
-    // SM2 签名/验签核心（对已构造好的 msg 操作，id 作 ZA）
-    std::string sm2_sign(const std::vector<unsigned char>& msg, const std::string& id,
+    // SM2 签名/验签核心（对已构造好的 msg 操作，32 字节 ID 作 ZA，ENTL=0x0100）
+    std::string sm2_sign(const std::vector<unsigned char>& msg, const std::vector<unsigned char>& id32,
                          const std::string& full_private_hex);
-    bool sm2_verify(const std::vector<unsigned char>& msg, const std::string& id,
+    bool sm2_verify(const std::vector<unsigned char>& msg, const std::vector<unsigned char>& id32,
                     const std::string& sig_raw_hex, const std::string& full_public_hex);
 
     // 点 ↔ x‖y（64 字节 / 128 hex），带曲线校验

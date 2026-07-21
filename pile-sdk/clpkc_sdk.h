@@ -125,12 +125,16 @@ std::string session_key_to_sm4(const std::string& sk32_hex);
 // 6. 编码辅助
 // ---------------------------------------------------------------------------
 
-// ASCII 主机编号 → 32 字节 ID hex（右侧补 0x00；超 32 字节抛异常）。
+// 【云 ID_A】域名等 ASCII 字符串 → 32 字节 ID hex（右侧补 0x00；超 32 字节抛异常）。
+//   例：make_id_from_ascii("cloud.example.com")
+//       → 636c6f75642e6578616d706c652e636f6d + 15 个 00
 std::string make_id_from_ascii(const std::string& ascii);
 
-// 7 字节 BCD 主机编号(14 hex) → 32 字节 ID hex（BCD 置于前 7 字节，其余补 0x00）。
-// 与 make_id_from_ascii 二选一，**待与对方确认现网编号形态后选用**。
-std::string make_id_from_bcd(const std::string& bcd_hex);
+// 【桩 ID_B】主机编号（≤14 位十进制数字串）→ 32 字节 ID hex：
+//   7 字节 BCD 主机编号 ‖ 25 字节 0x00。不足 14 位**左侧补 '0'**（保持数值不变）。
+//   例：make_id_from_bcd("1") == make_id_from_bcd("00000000000001")
+//       → 00000000000001 + 25 个 00
+std::string make_id_from_bcd(const std::string& host_no_decimal);
 
 // 点编码互转：wire 格式 = 64 字节裸 X‖Y（无 04）。
 //   point_to_wire  : 接受 65 字节 SEC1(04‖X‖Y) 或 64 字节裸点 → 统一输出 64 字节裸点。

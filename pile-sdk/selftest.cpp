@@ -54,7 +54,15 @@ const std::string NONCE =
 const std::string PSK =
     "00112233445566778899aabbccddeeff";
 
-// 由固定标量确定性导出（Java/C++ 一致，跨运行稳定）
+// ID：桩=7B BCD 主机编号‖25B 0x00；云=域名 ASCII‖0x00 补齐到 32B
+const std::string HOST_NO = "00000000000001";
+const std::string CLOUD_DOMAIN  = "cloud.example.com";
+const std::string ID_PILE_HEX =
+    "0000000000000100000000000000000000000000000000000000000000000000";
+const std::string ID_CLOUD_HEX =
+    "636c6f75642e6578616d706c652e636f6d000000000000000000000000000000";
+
+// 由固定标量确定性导出
 const std::string PPUB =
     "344081b80805540a38d71d721bd072d8957eae15aeb852e72086ab4c5962b89b5bb8628b9d9c4edd30f341a5a25886c063cff46dc04c7e68f2efb3b58830e0f3";
 const std::string RB =
@@ -64,37 +72,31 @@ const std::string RA =
 
 // KGC 颁发/云端签名含随机 w/k，冻结进 KAT 作为输入
 const std::string W_PILE =
-    "e19562f61b4a2befece57ae868322b80b97ee8bcf32e600524446636ffc5b1419edf41dc326d04460fff721d3a77103ff0446a412069d3e473ab57a0ed7e9d88";
+    "c40387e9a0d933cfe840e343ec6df4d227c9901654cdac8186cd1825e4958da5030a5b74e617f483ef688d8b01e6dbd8ae2f6ed102decea8e8b4367f714e6ca9";
 const std::string CIPHER_PILE =
-    "04612b15de497c992f4665dbb7b0e4555913cedbe3e8e26914b917c24573d65653f1162a4b9e508e261f863cf40f38087d9a5f9801637028d3aab01c1d919eaaa2fba908442cf18bd76104fa4d0e23fe57fb7e4beb55f70a57c7cf7853ee036df20dc39390de77301f1dae228c01afe25dbbc11fdbfc6bcb777705c1c5eff9c597";
+    "04403ca4451e324adfd32a792163cb5ae182fbe103698db0743a1289e8bb7205852add214d3520a695b1e40ca34fcfb47c7abbe4fb60edb39cc6de7f2396550738c6a8243be05ed0126af70c5dff6593cbc985769ce563665a8557ef01fbd564fc19f32bd424cbe624681aee11a27f66ce72408eeacc96454697ed0ce2117061b8";
 const std::string W_CLOUD =
-    "513766cab63b2c6a4bd2ba643ecda4b54da3b941f46434af3a7427bd8fa2d75bc7c064dcf63a149f82f281c65cac8cc25810ff5a7359ea4a068c4fa85a29d983";
+    "8113fea74d8f3f8ae31139a5fd8f6615a5b18be1802a46785ce2855bd39e94f66735b23e42c640a4707db7a4d4e23a8b8bf5084764e1492ac8c10aefd82a7732";
 const std::string SIG_RESPONDER =
-    "85d9004a1a7a86798cb6f43471f5bde88f70e228ba4740bd8e8d5f364c1f96a425e2356913cfed174d534636574cdbfafd3012600b885e75c5e13ddc9e6ca966";
+    "2e1b8baf6ba142ccf88ddf577463e93896372ce90b2085dd07d4a85f48bf2a327311865d0453be0af2901ff82580306b36bcda790e844210070e3f6de0d0dbc6";
 
 // ---------------- KAT 期望输出（Java 交叉验证一致）----------------
-const std::string ID_PILE_HEX =
-    "70696c652d303031000000000000000000000000000000000000000000000000";
-const std::string ID_CLOUD_HEX =
-    "636c6f75642d3030310000000000000000000000000000000000000000000000";
-const std::string ID_BCD_HEX =
-    "0000000000000100000000000000000000000000000000000000000000000000";
 const std::string T_PILE =
-    "c3d327ec98da76f2bd7dc2cef6d0bd016ab7ffe0d4e92edbe8d8408d2095f3dd";
+    "87ce2bc0c1aeb3a14ed247943c46159d24eb4f09fa779e1363a7fb6e3024a9e2";
 const std::string SK_PILE =
-    "d4f55b30ee40ee7b567dd3f12a151267e24098e0e60b62203e3eb815b99604ff";
+    "98f05f0517152b29e7d258b66f8a6b039c73e80a0b99d157b90e72f6c924bb04";
 const std::string PK_PILE =
-    "e05de511ca340f30dfa686f98a4b4fbf0f8c080b22ce7527e8640805db3dbb40d7d421d170566b7e0f550458ce8046092f6be3164c32bfc2080ab392b0182d23";
+    "ff7c8b38fc23a5412401d4e6f1778cd6e77c3968d0cb3affa25c5e3a4fa539f4b40e16da369641f9a7a6aa91b2046c3506e9f6b02f756bc76f473c462819338e";
 const std::string PK_CLOUD =
-    "b1611e3a53ed78714ed8693b70f90bf7c6435e15250d8f2c130bfa3cf5cb46b424ba107e364c097dc26628297bb02705bd86cdaab5b487695816dbb7363dfbed";
+    "76fe9e59a0d9b95b46f4704086dace3ba4e8a69cdac02f42ab07ddb9b7c518059fc5dc54b6bd21c9600180d0719e02607e8eaa10499ffffe601b4551c989badd";
 const std::string HMAC_EXP =
     "d0d51b9c7f0c8939775ecf3f5a5a49fdc349dfda5d34a168e6084a84af2f7b12";
 const std::string SM3_ABC =
     "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0";
 const std::string SESS_KEY =
-    "5327df76e796b34f9ba804d987c0748628859631ab8e0a53cb5d9618a8eaea80";
+    "badd7fb23a583988bda086803c8da5a9b833040df7d77bfb3f68fbffa74e0d00";
 const std::string SM4_KEY =
-    "5327df76e796b34f9ba804d987c07486";
+    "badd7fb23a583988bda086803c8da5a9";
 
 }  // namespace
 
@@ -112,12 +114,22 @@ int main() {
     check_bool("hmac_sm3_verify 错误 MAC",
                clpkc::hmac_sm3_verify(PSK, NONCE, std::string(64, '0')), false);
 
-    // --- KAT-3 ID 编码 ---
-    std::printf("[KAT-3] ID 编码（32 字节零补齐）\n");
-    check("make_id_from_ascii(\"pile-001\")", clpkc::make_id_from_ascii("pile-001"), ID_PILE_HEX);
-    check("make_id_from_ascii(\"cloud-001\")", clpkc::make_id_from_ascii("cloud-001"), ID_CLOUD_HEX);
-    check("make_id_from_bcd(\"00000000000001\")",
-          clpkc::make_id_from_bcd("00000000000001"), ID_BCD_HEX);
+    // --- KAT-3 ID 构造（新规则）---
+    std::printf("[KAT-3] ID 构造：桩 BCD 主机编号 / 云 域名 ASCII\n");
+    check("make_id_from_bcd(\"00000000000001\")", clpkc::make_id_from_bcd(HOST_NO), ID_PILE_HEX);
+    check("make_id_from_bcd(\"1\") 左补0 等价", clpkc::make_id_from_bcd("1"), ID_PILE_HEX);
+    check("make_id_from_ascii(域名)", clpkc::make_id_from_ascii(CLOUD_DOMAIN), ID_CLOUD_HEX);
+    {
+        bool t = false;
+        try { clpkc::make_id_from_bcd("123456789012345"); } catch (const clpkc::Error&) { t = true; }
+        check_bool("主机编号超 14 位应报错", t, true);
+        t = false;
+        try { clpkc::make_id_from_bcd("12a4"); } catch (const clpkc::Error&) { t = true; }
+        check_bool("主机编号含非十进制字符应报错", t, true);
+        t = false;
+        try { clpkc::make_id_from_ascii(std::string(33, 'x')); } catch (const clpkc::Error&) { t = true; }
+        check_bool("ASCII ID 超 32 字节应报错", t, true);
+    }
 
     // --- KAT-4 点编码 ---
     std::printf("[KAT-4] 点编码 wire(64B 裸) <-> SEC1(65B)\n");

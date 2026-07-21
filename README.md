@@ -72,9 +72,14 @@ KGC（`kgc-service/src/main/resources/application.properties`）：
 | `clpkc.cloud.kgc.base-url` / `CLPKC_KGC_BASE_URL` | KGC 地址。 |
 
 充电桩（`charging-pile/config/pile.conf`，环境变量可覆盖）：
-`pile.id` / `cloud.host` / `cloud.port` / `shared.key.hex` / `connect.timeout.ms` / `read.timeout.ms`。
+`pile.host_no`(主机编号，≤14 位十进制) / `cloud.host` / `cloud.port` / `shared.key.hex` / `connect.timeout.ms` / `read.timeout.ms`。
 
 ## 协议要点（改造后）
+
+> ⚠️ **破坏性变更（四端必须同版本）**：ID 由「ASCII 串零补齐」改为「桩=7B BCD 主机编号 / 云=域名 ASCII」，
+> 且线上 `id` 字段改传 **64 字符 hex**；nonce 进 transcript/KDF 由 hex 文本改为 **16 原始字节**。
+> **旧 `pile-keystore.json` 全部失效，需删除后重新开通。**
+
 
 **两阶段拆分**：桩（主机）发起，云平台**不再下发 challenge**——桩自生成本次会话的新鲜 `nonce`（16 字节，绑定签名防重放）并随首报文发给云，云只复用不重新生成；云按桩发来的报文类型分流：
 
@@ -85,10 +90,20 @@ KGC（`kgc-service/src/main/resources/application.properties`）：
 
 - **编码总则：所有进哈希/签名的字段一律使用「解码后的原始字节」，绝不使用 hex 文本**（hex 只是接口传参形式）。
   nonce 早期在 transcript/KDF 里曾以 hex 文本的 ASCII 参与（32 字节），现已统一为解码后的 **16 原始字节**（破坏性变更）。
-- **ID 统一 32 字节零补齐**（右侧 0x00）：transcript、会话密钥 KDF、身份摘要 HA(算 λ)、SM2 签名 ZA **四处一致**，ENTL 恒为 `0x0100`(=256bit)。
+- **ID 统一 32 字节**：transcript、会话密钥 KDF、身份摘要 HA(算 λ)、SM2 签名 ZA **四处一致**，ENTL 恒为 `0x0100`(=256bit)。
+  线上报文与 KGC HTTP 接口的 `id` 字段一律传 **64 字符 hex**（32 字节 ID 的十六进制），收到后解码成 32 字节直接进密码学层。
+  - **桩 ID_B** = 7 字节 BCD 主机编号 ‖ 25 字节 `0x00`。主机编号为 ≤14 位十进制数字串，
+    **不足 14 位左侧补 `'0'`**（保持数值不变，如 `1` → `00000000000001`）。配置 `pile.host_no` / `CLPKC_PILE_HOST_NO`。
+  - **云 ID_A** = 域名 ASCII 字节 ‖ `0x00` 补齐到 32 字节。配置 `clpkc.cloud.id`（如 `cloud.example.com`）。
+  - 字节级示例：
+    ```
+    ID_B: 00 00 00 00 00 00 01 | 00 × 25                  (主机编号 00000000000001)
+    ID_A: 63 6c 6f 75 64 2e 65 78 61 6d 70 6c 65 2e 63 6f 6d | 00 × 15   ("cloud.example.com")
+    ```
+  - ID 超 32 字节 / 主机编号超 14 位或含非十进制字符 → **直接报错**（不截断）。
 - 身份摘要 `HA = SM3(0x0100 ‖ ID32 ‖ a ‖ b ‖ Gx ‖ Gy ‖ Ppub.x ‖ Ppub.y)`；`λ = SM3(WA.x ‖ WA.y ‖ HA)`
 - 完整密钥 `dA = (tA + ua) mod n`，`PA = WA + λ·Ppub`（验证方重构，无需预存公钥）
-- SM2 签名 transcript（**全定长字段直拼、无长度前缀**）：发起方（桩）签 `R_B ‖ ID_B ‖ W_B ‖ nonce`，响应方（云）签 `R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce`；ID 定长 32 字节右侧 0x00 补齐；签名线上格式为裸 `r‖s`（64 字节）
+- SM2 签名 transcript（**全定长字段直拼、无长度前缀**）：发起方（桩）签 `R_B ‖ ID_B ‖ W_B ‖ nonce`，响应方（云）签 `R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce`；ID 为上述 32 字节形态；签名线上格式为裸 `r‖s`（64 字节）
 - 会话密钥 `SK = SM3(x(ECDH) ‖ RA ‖ RB ‖ ID_A ‖ ID_B ‖ nonce)`
 - 点线上编码 `x(32)‖y(32)`（128 hex，无 04 前缀）；配置文件为 `.properties` 格式
 

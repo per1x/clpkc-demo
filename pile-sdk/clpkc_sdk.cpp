@@ -581,10 +581,24 @@ std::string make_id_from_ascii(const std::string& ascii) {
     return bytes_to_hex(out);
 }
 
-std::string make_id_from_bcd(const std::string& bcd_hex) {
-    Bytes bcd = hex_fixed(bcd_hex, 7, "BCD 主机编号");
+std::string make_id_from_bcd(const std::string& host_no_decimal) {
+    const std::size_t BCD_DIGITS = 14;  // 7 字节 BCD = 14 个十进制位
+    if (host_no_decimal.empty() || host_no_decimal.size() > BCD_DIGITS) {
+        throw Error("主机编号必须为 1..14 位十进制数字，实际 "
+                    + std::to_string(host_no_decimal.size()) + " 位");
+    }
+    for (char c : host_no_decimal) {
+        if (c < '0' || c > '9') {
+            throw Error(std::string("主机编号必须全为十进制数字，遇到 '") + c + "'");
+        }
+    }
+    // 不足 14 位：**左侧补 '0'**（保持数值不变，如 "1" → "00000000000001"）
+    std::string d(BCD_DIGITS - host_no_decimal.size(), '0');
+    d += host_no_decimal;
     Bytes out(ID_LEN, 0x00);
-    std::memcpy(out.data(), bcd.data(), bcd.size());
+    for (std::size_t i = 0; i < BCD_DIGITS / 2; i++) {
+        out[i] = static_cast<unsigned char>(((d[2 * i] - '0') << 4) | (d[2 * i + 1] - '0'));
+    }
     return bytes_to_hex(out);
 }
 

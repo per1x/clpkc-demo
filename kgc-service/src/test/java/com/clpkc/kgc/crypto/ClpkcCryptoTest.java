@@ -21,8 +21,9 @@ class ClpkcCryptoTest {
     void fullHandshakeIsConsistent() {
         BigInteger masterSecret = crypto.curve().randomScalar();
         String ppub = crypto.masterPublicHex(masterSecret);
-        String pileId = "pile-001";
-        String cloudId = "cloud-001";
+        // ID 现为 32 字节（64 hex）：桩=BCD 主机编号，云=域名 ASCII 补 0x00
+        String pileId = ClpkcCrypto.idHexFromBcd("00000000000001");
+        String cloudId = ClpkcCrypto.idHexFromAscii("cloud.example.com");
 
         ClpkcCrypto.KeyMaterial pile = crypto.generateStaticKey();
         ClpkcCrypto.KeyMaterial cloud = crypto.generateStaticKey();

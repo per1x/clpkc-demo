@@ -191,7 +191,7 @@ public final class ClpkcCrypto {
             SM2Signer signer = new SM2Signer(PlainDSAEncoding.INSTANCE);  // 裸 r‖s 64 字节
             signer.init(true, new ParametersWithID(new ParametersWithRandom(
                 new ECPrivateKeyParameters(fullPrivate, EcCurve.DOMAIN), random),
-                fixedId(id)));  // ZA 用户标识统一 32 字节零补齐（ENTL=0x0100）
+                decodeId(id)));  // ZA 用户标识统一 32 字节零补齐（ENTL=0x0100）
             signer.update(msg, 0, msg.length);
             return Hex.encode(signer.generateSignature());
         } catch (Exception e) {
@@ -204,7 +204,7 @@ public final class ClpkcCrypto {
             ECPoint pa = curve.pointFromHex(fullPublicHex);
             SM2Signer signer = new SM2Signer(PlainDSAEncoding.INSTANCE);  // 裸 r‖s 64 字节
             signer.init(false, new ParametersWithID(
-                new ECPublicKeyParameters(pa, EcCurve.DOMAIN), fixedId(id)));  // ZA 32 字节零补齐（ENTL=0x0100）
+                new ECPublicKeyParameters(pa, EcCurve.DOMAIN), decodeId(id)));  // ZA 32 字节零补齐（ENTL=0x0100）
             signer.update(msg, 0, msg.length);
             return signer.verifySignature(Hex.decode(sigHex));
         } catch (RuntimeException e) {
@@ -223,7 +223,7 @@ public final class ClpkcCrypto {
         byte[] sharedX = curve.toFixed(shared.normalize().getAffineXCoord().toBigInteger(), EcCurve.SCALAR_LEN);
         byte[] digest = EcCurve.sm3(concat(requireLen(sharedX, 32, "Sx"),
             requireLen(ra, 64, "R_A"), requireLen(rb, 64, "R_B"),
-            fixedId(idA), fixedId(idB), decodeNonce(nonce)));
+            decodeId(idA), decodeId(idB), decodeNonce(nonce)));
         return Hex.encode(digest);
     }
 
@@ -241,7 +241,7 @@ public final class ClpkcCrypto {
     // ------------------------------------------------------------------
 
     private byte[] computeHA(String id, String masterPublicHex) {
-        byte[] idBytes = fixedId(id);  // ID 统一 32 字节零补齐 → ENTL 恒为 256 bit（0x0100）
+        byte[] idBytes = decodeId(id);  // ID 统一 32 字节零补齐 → ENTL 恒为 256 bit（0x0100）
         int lenBits = idBytes.length * 8;  // = 256
         byte[] len2B = {(byte) ((lenBits >>> 8) & 0xff), (byte) (lenBits & 0xff)};
         byte[] ppub = Hex.decode(masterPublicHex);
@@ -259,26 +259,60 @@ public final class ClpkcCrypto {
 
     /** 发起方 transcript：R_B ‖ ID_B ‖ W_B ‖ nonce（全定长字段直拼，无长度前缀）。 */
     private byte[] transcriptInitiator(byte[] rB, String idB, byte[] wB, String nonce) {
-        return concat(requireLen(rB, 64, "R_B"), fixedId(idB),
+        return concat(requireLen(rB, 64, "R_B"), decodeId(idB),
             requireLen(wB, 64, "W_B"), decodeNonce(nonce));
     }
 
     /** 响应方 transcript：R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce（全定长字段直拼，无长度前缀）。 */
     private byte[] transcriptResponder(byte[] rA, byte[] rB, String idA, byte[] wA, String nonce) {
-        return concat(requireLen(rA, 64, "R_A"), requireLen(rB, 64, "R_B"), fixedId(idA),
+        return concat(requireLen(rA, 64, "R_A"), requireLen(rB, 64, "R_B"), decodeId(idA),
             requireLen(wA, 64, "W_A"), decodeNonce(nonce));
     }
 
     /** ID 定长编码：UTF-8 取 {@value #ID_FIXED_LEN} 字节，右侧 0x00 补齐；超长截断并告警。 */
-    private byte[] fixedId(String id) {
-        byte[] raw = id.getBytes(StandardCharsets.UTF_8);
+    /** ID 一律 32 字节；接口/线上传 64 字符 hex，此处解码并校验长度。 */
+    private static byte[] decodeId(String idHex) {
+        return requireLen(Hex.decode(idHex), ID_FIXED_LEN, "ID");
+    }
+
+    /**
+     * 桩 ID_B = 7 字节 BCD 主机编号 ‖ 25 字节 0x00 → 64 字符 hex。
+     * hostNoDecimal 为 ≤14 位十进制数字串，不足 14 位**左侧补 '0'**（保持数值不变）。
+     */
+    public static String idHexFromBcd(String hostNoDecimal) {
+        final int digits = 14;
+        if (hostNoDecimal == null || hostNoDecimal.isEmpty() || hostNoDecimal.length() > digits) {
+            throw new IllegalArgumentException("主机编号必须为 1..14 位十进制数字，实际 "
+                + (hostNoDecimal == null ? 0 : hostNoDecimal.length()) + " 位");
+        }
+        for (int i = 0; i < hostNoDecimal.length(); i++) {
+            char c = hostNoDecimal.charAt(i);
+            if (c < '0' || c > '9') {
+                throw new IllegalArgumentException("主机编号必须全为十进制数字: " + hostNoDecimal);
+            }
+        }
+        StringBuilder d = new StringBuilder();
+        for (int i = hostNoDecimal.length(); i < digits; i++) {
+            d.append('0');
+        }
+        d.append(hostNoDecimal);
+        byte[] out = new byte[ID_FIXED_LEN];
+        for (int i = 0; i < digits / 2; i++) {
+            out[i] = (byte) (((d.charAt(2 * i) - '0') << 4) | (d.charAt(2 * i + 1) - '0'));
+        }
+        return Hex.encode(out);
+    }
+
+    /** 云 ID_A = 域名 ASCII 字节 ‖ 0x00 补齐到 32 字节 → 64 字符 hex。 */
+    public static String idHexFromAscii(String ascii) {
+        byte[] raw = ascii.getBytes(StandardCharsets.UTF_8);
         if (raw.length > ID_FIXED_LEN) {
             throw new IllegalArgumentException(
-                "ID 超过 " + ID_FIXED_LEN + " 字节上限，实际 " + raw.length + " 字节: " + id);
+                "ID 超过 " + ID_FIXED_LEN + " 字节上限，实际 " + raw.length + " 字节: " + ascii);
         }
         byte[] out = new byte[ID_FIXED_LEN];
         System.arraycopy(raw, 0, out, 0, raw.length);
-        return out;
+        return Hex.encode(out);
     }
 
     /** 定长校验：长度不符立即报错，避免静默算出与对端不同的结果。 */
