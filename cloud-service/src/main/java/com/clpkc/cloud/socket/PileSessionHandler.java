@@ -1,12 +1,14 @@
 package com.clpkc.cloud.socket;
 
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.slf4j.Logger;
@@ -36,6 +38,7 @@ import com.clpkc.cloud.service.PileDirectory;
 public final class PileSessionHandler implements Runnable {
 
     private static final Logger log = LoggerFactory.getLogger(PileSessionHandler.class);
+    private static final int MAX_LINE_BYTES = 16 * 1024;
     /** 第一阶段挑战随机数字节数（random_A / random_B 各 16 字节，每次连接新鲜生成）。 */
     private static final int CHALLENGE_LEN = 16;
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -59,196 +62,167 @@ public final class PileSessionHandler implements Runnable {
             s.setSoTimeout(readTimeoutMs);
             s.setTcpNoDelay(true);
             InputStream in = s.getInputStream();
-            OutputStream out = s.getOutputStream();
-            Frame first = Frame.read(in);           // 桩（主机）发起，读首帧按类型分流
-            if (first.type == Frame.TYPE_P1_UP) {
-                provision(in, out, peer, first);    // 第一阶段（0x39/0x3A）
-            } else if (first.type == Frame.TYPE_P2_UP) {
-                session(in, out, peer, first);      // 第二阶段（0x3B/0x3C）
-            } else {
-                log.warn("[Cloud][Socket] {} 未知首帧类型: 0x{}", peer, Integer.toHexString(first.type));
-            }
+            BufferedWriter writer = new BufferedWriter(
+                new OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8));
+            handle(in, writer, peer);
         } catch (Exception e) {
             log.warn("[Cloud][Socket] 连接 {} 处理结束/异常: {}", peer, e.getMessage());
         }
     }
 
-    /**
-     * 第一阶段：<b>双向</b> HMAC-SM3 挑战应答 + 转发 KGC 申请部分私钥（二进制帧 0x39/0x3A）。
-     *
-     * <p>msg1 桩→云 hmac_req(ID_B, UA, randomB)；msg2 云→桩 hmac_challenge(ID_A, mac_B, randomA)；
-     * msg3 桩→云 hmac_response(mac_A)；msg4 云→桩 auth_result(result)；
-     * msg5 桩→云 pk_request(ID_B, UA)；msg6 云→桩 pk_response(WA, partialPrivate, Ppub)。
-     * random_A/random_B 每次连接新鲜生成，任一侧校验失败立即回 result=FAIL 并中止。</p>
-     */
-    private void provision(InputStream in, OutputStream out, String peer, Frame msg1) throws IOException {
-        int seq = 1;
-        // msg1 (0x39/0x11 hmac_req): STEP ‖ ID_B(32) ‖ UA(64) ‖ randomB(16)
-        Frame.Reader r1 = new Frame.Reader(msg1.payload);
-        if (r1.u8() != Frame.STEP_1_REQ) {
-            log.warn("[Cloud][Socket] {} 第一阶段首帧 STEP 非法。", peer);
-            return;
+    private void handle(InputStream in, BufferedWriter writer, String peer) throws IOException {
+        // 桩（主机）发起：云不再下发 challenge，直接读桩的首报文并按类型分流。
+        Map<String, String> msg = JsonCodec.parse(readLine(in));
+        String type = msg.get("type");
+        if ("hmac".equals(type)) {
+            provision(in, writer, peer, msg);      // 第一阶段（桩自带 nonce）
+        } else if ("ka_request".equals(type)) {
+            session(writer, peer, msg);            // 第二阶段（桩发起，2 步）
+        } else {
+            log.warn("[Cloud][Socket] {} 未知首报文类型: {}", peer, type);
         }
-        String pileId = idFrom32(r1.take(32));
-        r1.take(64);                                  // UA（此处不用，见 pk_request）
-        byte[] randomB = r1.take(16);                 // 桩对云的挑战
-        byte[] host = Frame.bcd7FromId(pileId);
+    }
 
-        // msg2 (0x3A/0x12 hmac_challenge): STEP ‖ ID_A(32) ‖ mac_B(32) ‖ randomA(16)
+    /**
+     * 第一阶段：<b>双向</b> HMAC-SM3 挑战应答 + 转发 KGC 申请部分私钥（仅首次）。
+     *
+     * <p>msg1 桩→云 {@code hmac(id, publicKey, randomB)}：桩以 random_B 挑战云；
+     * msg2 云→桩 {@code hmac_challenge(mac=HMAC(PSK,random_B), randomA)}：云自证并反向挑战；
+     * msg3 桩→云 {@code hmac_response(mac=HMAC(PSK,random_A))}：桩应答云的挑战；
+     * msg4 云→桩 {@code auth_ok}：云验通过才放行后续密钥材料下发。
+     * random_A / random_B 每次连接新鲜生成，任一侧校验失败立即中止。</p>
+     */
+    private void provision(InputStream in, BufferedWriter writer, String peer,
+                           Map<String, String> hmacReq) throws IOException {
+        String pileId = required(hmacReq, "id");
+        byte[] randomB = Hex.decode(required(hmacReq, "randomB"));   // 桩对云的挑战
+
+        // 云用 PSK 应答桩的挑战（自证身份），同时生成自己的挑战 random_A
         byte[] randomA = new byte[CHALLENGE_LEN];
         RANDOM.nextBytes(randomA);
-        byte[] macB = identity.crypto().hmac(identity.sharedKey(), randomB);   // 云自证
-        byte[] p2 = new Frame.Writer().step(Frame.STEP_1_RESP)
-            .bytes(id32(identity.id())).bytes(macB).bytes(randomA).toArray();
-        Frame.write(out, Frame.encode(Frame.TYPE_P1_DOWN, seq++, host, p2));
+        send(writer, ordered(
+            "type", "hmac_challenge",
+            "id", identity.id(),
+            "mac", Hex.encode(identity.crypto().hmac(identity.sharedKey(), randomB)),
+            "randomA", Hex.encode(randomA)));
 
-        // msg3 (0x39/0x21 hmac_response): STEP ‖ mac_A(32)，云校验；失败即中止，不下发密钥材料
-        Frame f3 = Frame.read(in);
-        Frame.Reader r3 = new Frame.Reader(f3.payload);
-        if (f3.type != Frame.TYPE_P1_UP || r3.u8() != Frame.STEP_2_REQ) {
-            log.warn("[Cloud][Socket] {} 第一阶段期待 hmac_response(0x39/0x21)。", peer);
-            sendAuthResult(out, host, seq, Frame.RESULT_FAIL);
+        // 桩回 HMAC(PSK, random_A)，云校验；失败即中止，不下发任何密钥材料
+        Map<String, String> authResp = JsonCodec.parse(readLine(in));
+        if (!"hmac_response".equals(authResp.get("type"))) {
+            log.warn("[Cloud][Socket] {} 第一阶段期待 hmac_response，实际: {}", peer, authResp.get("type"));
+            send(writer, Map.of("type", "auth_fail"));
             return;
         }
-        byte[] macA = r3.take(32);
         byte[] expected = identity.crypto().hmac(identity.sharedKey(), randomA);
-        if (!MessageDigest.isEqual(expected, macA)) {
+        String macHex = authResp.get("mac");
+        if (macHex == null || !MessageDigest.isEqual(expected, Hex.decode(macHex))) {
             log.warn("[Cloud][Socket] {} 桩端 HMAC 校验失败，拒绝。", peer);
-            sendAuthResult(out, host, seq, Frame.RESULT_FAIL);
+            send(writer, Map.of("type", "auth_fail"));
             return;
         }
-        // msg4 (0x3A/0x22 auth_result): STEP ‖ result(1) ‖ ID_A(32)
-        sendAuthResult(out, host, seq++, Frame.RESULT_OK);
         log.info("[Cloud][Socket] {} 第一阶段双向 HMAC 认证通过，桩 id={}", peer, pileId);
+        send(writer, ordered("type", "auth_ok", "id", identity.id()));
 
-        // msg5 (0x39/0x31 pk_request): STEP ‖ ID_B(32) ‖ UA(64)
-        Frame f5 = Frame.read(in);
-        Frame.Reader r5 = new Frame.Reader(f5.payload);
-        if (f5.type != Frame.TYPE_P1_UP || r5.u8() != Frame.STEP_3_REQ) {
-            log.warn("[Cloud][Socket] {} 第一阶段期待 pk_request(0x39/0x31)。", peer);
-            return;
-        }
-        String reqId = idFrom32(r5.take(32));
-        String reqUa = Hex.encode(r5.take(64));
-        Map<String, String> kgcResp = identity.forwardPartialKey(reqId, reqUa);   // 云↔KGC 仍 JSON/HTTP
-
-        // msg6 (0x3A/0x32 pk_response): STEP ‖ WA(64) ‖ partialPrivate(129) ‖ Ppub(64)
-        byte[] p6 = new Frame.Writer().step(Frame.STEP_3_RESP)
-            .bytes(Hex.decode(kgcResp.get("claimedPublic")))
-            .bytes(Hex.decode(kgcResp.get("partialPrivate")))
-            .bytes(Hex.decode(kgcResp.get("masterPublicKey"))).toArray();
-        Frame.write(out, Frame.encode(Frame.TYPE_P1_DOWN, seq, host, p6));
-        log.info("[Cloud][Socket] {} 第一阶段完成，已下发声明公钥+部分私钥。", peer);
+        Map<String, String> partialReq = JsonCodec.parse(readLine(in));
+        Map<String, String> kgcResp = identity.forwardPartialKey(
+            required(partialReq, "id"), required(partialReq, "publicKey"));
+        send(writer, ordered(
+            "type", "partial_key_response",
+            "curve", kgcResp.get("curve"),
+            "claimedPublic", kgcResp.get("claimedPublic"),
+            "partialPrivate", kgcResp.get("partialPrivate"),
+            "masterPublicKey", kgcResp.get("masterPublicKey")));
+        log.info("[Cloud][Socket] {} 第一阶段完成，已下发声明公钥+部分私钥（桩本地持久化后走第二阶段）。", peer);
     }
 
-    private void sendAuthResult(OutputStream out, byte[] host, int seq, int result) throws IOException {
-        byte[] p = new Frame.Writer().step(Frame.STEP_2_RESP).u8(result).bytes(id32(identity.id())).toArray();
-        Frame.write(out, Frame.encode(Frame.TYPE_P1_DOWN, seq, host, p));
-    }
-
-    /**
-     * 第二阶段：验桩签名 + 云签名回应 + 双向回执 + 派生会话密钥（二进制帧 0x3B/0x3C）。
-     *
-     * <p>msg1 桩→云 ka_request；msg2 云→桩 ka_response(含云对桩签名的验签结果)；
-     * msg3 桩→云 ka_confirm(桩对云签名的验签结果 + 是否收到)；msg4 云→桩 ka_ack(已收到)。</p>
-     */
-    private void session(InputStream in, OutputStream out, String peer, Frame msg1) throws IOException {
+    /** 第二阶段（桩发起，2 步）：验桩(发起方)签名 + 云(响应方)签名回应 + 派生会话密钥。 */
+    private void session(BufferedWriter writer, String peer, Map<String, String> kaReq) throws IOException {
         ClpkcCrypto crypto = identity.crypto();
-        int seq = 1;
-        // msg1 (0x3B/0x11 ka_request): STEP ‖ UUID(32) ‖ CP56(7) ‖ ID_B(32) ‖ WB(64) ‖ rB(64) ‖ nonce(16) ‖ sig_B(64)
-        Frame.Reader r = new Frame.Reader(msg1.payload);
-        if (r.u8() != Frame.STEP_1_REQ) {
-            log.warn("[Cloud][Socket] {} 第二阶段首帧 STEP 非法。", peer);
-            return;
-        }
-        byte[] uuid = r.take(32);
-        r.take(7);                                     // CP56Time2a（传输元数据）
-        String pileId = idFrom32(r.take(32));          // ID_B
-        byte[] host = Frame.bcd7FromId(pileId);
-        String wBHex = Hex.encode(r.take(64));         // W_B
-        byte[] rB = r.take(64);                        // R_B
-        String nonceHex = Hex.encode(r.take(16));      // nonce（16 字节 → hex 供密码学层）
-        byte[] sigB = r.take(64);                      // sig_B
+        String pileId = required(kaReq, "id");                       // ID_B
 
         // 桩编号核对（对接云平台既有编号系统，见 PileDirectory）
         if (!pileDirectory.isAuthorized(pileId)) {
             log.warn("[Cloud][Socket] {} 桩编号未授权: {}", peer, pileId);
-            sendKaResponseFail(out, host, seq, uuid);
+            send(writer, Map.of("type", "ka_fail"));
             return;
         }
-        String pileFullPublic = crypto.reconstructFullPublicHex(pileId, wBHex, identity.masterPublicHex());
+
+        String nonceHex = required(kaReq, "nonce");                  // 桩生成的 nonce
+        String rBHex = required(kaReq, "rB");                        // R_B（桩临时公钥）
+        String wBHex = required(kaReq, "claimedPublic");            // W_B（桩自己的声明公钥）
+        String pileFullPublic = crypto.reconstructFullPublicHex(
+            pileId, wBHex, identity.masterPublicHex());
         // 验桩(发起方)签名 transcript = R_B ‖ ID_B ‖ W_B ‖ nonce
-        boolean pileOk = crypto.verifyInitiator(rB, pileId, Hex.decode(wBHex),
-            nonceHex, Hex.encode(sigB), pileFullPublic);
-        if (!pileOk) {
+        boolean ok = crypto.verifyInitiator(Hex.decode(rBHex), pileId, Hex.decode(wBHex),
+            nonceHex, required(kaReq, "sig"), pileFullPublic);
+        if (!ok) {
             log.warn("[Cloud][Socket] {} 桩端 KA 签名校验失败。", peer);
-            sendKaResponseFail(out, host, seq, uuid);
+            send(writer, Map.of("type", "ka_fail"));
             return;
         }
 
         // 云(响应方)生成临时公钥 R_A，签 transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce
         ClpkcCrypto.KeyMaterial cloudEph = crypto.generateStaticKey();  // (r_A, R_A)
         String rAHex = cloudEph.publicKeyHex();
-        String sig = crypto.signResponder(Hex.decode(rAHex), rB, identity.id(),
-            Hex.decode(identity.claimedPublicHex()), nonceHex, identity.fullPrivate());
-        // msg2 (0x3C/0x12 ka_response): STEP ‖ UUID ‖ CP56 ‖ result(OK) ‖ ID_A(32) ‖ WA(64) ‖ rA(64) ‖ sig_A(64)
-        byte[] p2 = new Frame.Writer().step(Frame.STEP_1_RESP)
-            .bytes(uuid).bytes(Frame.cp56Now()).u8(Frame.RESULT_OK)
-            .bytes(id32(identity.id())).bytes(Hex.decode(identity.claimedPublicHex()))
-            .bytes(Hex.decode(rAHex)).bytes(Hex.decode(sig)).toArray();
-        Frame.write(out, Frame.encode(Frame.TYPE_P2_DOWN, seq++, host, p2));
+        String sig = crypto.signResponder(Hex.decode(rAHex), Hex.decode(rBHex),
+            identity.id(), Hex.decode(identity.claimedPublicHex()), nonceHex, identity.fullPrivate());
+        send(writer, ordered(
+            "type", "ka_response",
+            "id", identity.id(),
+            "claimedPublic", identity.claimedPublicHex(),
+            "rA", rAHex,
+            "sig", sig));
 
         // SK = SM3(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)
         String sessionKey = crypto.deriveSessionKey(cloudEph.secretScalar(),
-            Hex.encode(rB), Hex.decode(rAHex), rB, identity.id(), pileId, nonceHex);
+            rBHex, Hex.decode(rAHex), Hex.decode(rBHex),
+            identity.id(), pileId, nonceHex);
         if (sessionKey.length() != 64) {
             throw new IllegalStateException("session key derivation failed");
         }
-
-        // msg3 (0x3B/0x21 ka_confirm): STEP ‖ UUID ‖ CP56 ‖ result(桩验云签名) ‖ received(是否收到)
-        Frame f3 = Frame.read(in);
-        Frame.Reader r3 = new Frame.Reader(f3.payload);
-        if (f3.type != Frame.TYPE_P2_UP || r3.u8() != Frame.STEP_2_REQ) {
-            log.warn("[Cloud][Socket] {} 第二阶段未收到桩回执(0x3B/0x21)。", peer);
-            return;
-        }
-        r3.take(32);                                   // UUID
-        r3.take(7);                                    // CP56
-        int pileVerify = r3.u8();
-        int received = r3.u8();
-        // msg4 (0x3C/0x22 ka_ack): STEP ‖ UUID ‖ CP56 ‖ received(已收到)
-        byte[] p4 = new Frame.Writer().step(Frame.STEP_2_RESP)
-            .bytes(uuid).bytes(Frame.cp56Now()).u8(Frame.RECEIVED_YES).toArray();
-        Frame.write(out, Frame.encode(Frame.TYPE_P2_DOWN, seq, host, p4));
-
         String fingerprint = Hex.encode(EcCurve.sm3(
             sessionKey.getBytes(StandardCharsets.UTF_8))).substring(0, 16);
-        log.info("[Cloud] 第二阶段与桩 {} 会话密钥协商完成（指纹 SM3(SK)[0:16]={}，桩验签={}，桩已收={}，密钥不落日志）。",
-            pileId, fingerprint,
-            pileVerify == Frame.RESULT_OK ? "通过" : "失败",
-            received == Frame.RECEIVED_YES ? "是" : "否");
+        log.info("[Cloud] 第二阶段与桩 {} 会话密钥协商完成（指纹 SM3(SK)[0:16]={}，密钥不落日志）。",
+            pileId, fingerprint);
     }
 
-    /** 验签/授权失败时回 ka_response(result=FAIL)，其余字段填 0；桩见 result!=OK 即中止。 */
-    private void sendKaResponseFail(OutputStream out, byte[] host, int seq, byte[] uuid) throws IOException {
-        byte[] p = new Frame.Writer().step(Frame.STEP_1_RESP)
-            .bytes(uuid).bytes(Frame.cp56Now()).u8(Frame.RESULT_FAIL)
-            .bytes(id32(identity.id())).bytes(new byte[64]).bytes(new byte[64]).bytes(new byte[64]).toArray();
-        Frame.write(out, Frame.encode(Frame.TYPE_P2_DOWN, seq, host, p));
+    private void send(BufferedWriter writer, Map<String, String> body) throws IOException {
+        writer.write(JsonCodec.stringify(body));
+        writer.write('\n');
+        writer.flush();
     }
 
-    private static byte[] id32(String id) {
-        byte[] raw = id.getBytes(StandardCharsets.UTF_8);
-        byte[] out = new byte[32];
-        System.arraycopy(raw, 0, out, 0, Math.min(raw.length, 32));
-        return out;
-    }
-
-    private static String idFrom32(byte[] b) {
-        int n = b.length;
-        while (n > 0 && b[n - 1] == 0) {
-            n--;
+    private static Map<String, String> ordered(String... kv) {
+        Map<String, String> m = new LinkedHashMap<>();
+        for (int i = 0; i < kv.length; i += 2) {
+            m.put(kv[i], kv[i + 1]);
         }
-        return new String(b, 0, n, StandardCharsets.UTF_8);
+        return m;
+    }
+
+    private static String required(Map<String, String> map, String key) {
+        String v = map.get(key);
+        if (v == null || v.isBlank()) {
+            throw new IllegalArgumentException("缺少字段: " + key);
+        }
+        return v;
+    }
+
+    /** 读取一行（'\n' 结尾），限制最大字节数以防内存耗尽。 */
+    private String readLine(InputStream in) throws IOException {
+        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream(256);
+        int b;
+        while ((b = in.read()) != -1) {
+            if (b == '\n') {
+                return buf.toString(StandardCharsets.UTF_8);
+            }
+            if (b != '\r') {
+                buf.write(b);
+            }
+            if (buf.size() > MAX_LINE_BYTES) {
+                throw new IOException("line exceeds max length " + MAX_LINE_BYTES);
+            }
+        }
+        throw new IOException("connection closed by peer");
     }
 }

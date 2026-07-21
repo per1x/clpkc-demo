@@ -76,19 +76,16 @@ KGC（`kgc-service/src/main/resources/application.properties`）：
 
 ## 协议要点（改造后）
 
-**传输**：桩 ↔ 云一律 **二进制帧**（类型 `0x39/0x3A`=一阶段，`0x3B/0x3C`=二阶段；`(类型,STEP)` 唯一确定报文语义），帧结构与全部假设见 [`docs/WIRE_PROTOCOL.md`](docs/WIRE_PROTOCOL.md)。云 ↔ KGC 仍走 JSON/HTTPS。
+**两阶段拆分**：桩（主机）发起，云平台**不再下发 challenge**——桩自生成本次会话的新鲜 `nonce`（16 字节，绑定签名防重放）并随首报文发给云，云只复用不重新生成；云按桩发来的报文类型分流：
 
-**两阶段拆分**：桩（主机）发起，云平台**不下发 challenge**——桩自生成本次会话的新鲜 `nonce`（16 字节，绑定签名防重放）并随首帧发给云，云只复用不重新生成；云按首帧类型分流：
-
-- **第一阶段（仅首次，provision，0x39/0x3A）**：**双向 HMAC-SM3 挑战应答**（6 帧）——`hmac_req(ID_B, UA, randomB)` → `hmac_challenge(ID_A, mac_B, randomA)`（云自证并反向挑战）→ 桩**验证云的 mac_B**（不过即中止）后 `hmac_response(mac_A)` → `auth_result(result)` → `pk_request(ID_B, UA)` → 云转发 KGC → `pk_response(WA, partialPrivate, Ppub)`。桩组合 `dA` 后**本地持久化**（`pile-keystore.json`）。`random_A`/`random_B` 各 16 字节、每次连接新鲜生成。
-- **第二阶段（每次会话，session，0x3B/0x3C）**：桩加载本地密钥，发 `ka_request(UUID, CP56, ID_B, WB, rB, nonce, sig_B)` → 云核对桩编号(见 `PileDirectory`)、重构 `PA` 验发起方签名、回 `ka_response(result, ID_A, WA, rA, sig_A)`（result=云验桩签名结果）→ 桩验云签名后回 `ka_confirm(result, received)`（验签结果 + 是否收到）→ 云回 `ka_ack(received)`。双方派生会话密钥。**不再走 HMAC、不再申请 KGC。**
+- **第一阶段（仅首次，provision）**：**双向 HMAC-SM3 挑战应答**（4 条报文）——桩发 `hmac(id, publicKey, randomB)` → 云回 `hmac_challenge(mac=HMAC(PSK,randomB), randomA)` 自证身份并反向挑战 → 桩**验证云的 MAC**（不过即中止）后回 `hmac_response(mac=HMAC(PSK,randomA))` → 云验证通过回 `auth_ok`。随后 `partial_key_request` → 云平台转发 KGC → `partial_key_response(claimedPublic WA, partialPrivate, masterPublicKey)`。桩组合 `dA` 后**本地持久化**（`pile-keystore.json`）。`random_A`/`random_B` 各 16 字节、每次连接新鲜生成。
+- **第二阶段（每次会话，session）**：桩加载本地密钥，直接发 `ka_request(id, claimedPublic, rB, nonce, sig)`（msg1）→ 云平台核对桩编号(见 `PileDirectory`)、重构 `PA` 验发起方签名 → 回 `ka_response`（msg2，含云临时公钥 `rA` 与响应方签名）→ 双方派生会话密钥。**不再走 HMAC、不再申请 KGC。**
 
 密码学细节：
 
-- **ID 统一 32 字节零补齐**：transcript、会话密钥 KDF、身份摘要 HA(算 λ)、SM2 签名 ZA **四处一致**（ENTL 恒为 `0x0100`=256bit）。与帧头 7 字节 BCD 主机编号是两回事（后者仅传输层，见 `docs/WIRE_PROTOCOL.md`）。
-- 身份摘要 `HA = SM3(0x0100 ‖ ID32 ‖ a ‖ b ‖ Gx ‖ Gy ‖ Ppub.x ‖ Ppub.y)`；`λ = SM3(WA.x ‖ WA.y ‖ HA)`
+- 身份摘要 `HA = SM3(len2B(id) ‖ id ‖ a ‖ b ‖ Gx ‖ Gy ‖ Ppub.x ‖ Ppub.y)`；`λ = SM3(WA.x ‖ WA.y ‖ HA)`
 - 完整密钥 `dA = (tA + ua) mod n`，`PA = WA + λ·Ppub`（验证方重构，无需预存公钥）
-- SM2 签名 transcript（**全定长字段直拼、无长度前缀**）：发起方（桩）签 `R_B ‖ ID_B ‖ W_B ‖ nonce`，响应方（云）签 `R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce`；签名线上格式为裸 `r‖s`（64 字节）
+- SM2 签名 transcript（**全定长字段直拼、无长度前缀**）：发起方（桩）签 `R_B ‖ ID_B ‖ W_B ‖ nonce`，响应方（云）签 `R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce`；ID 定长 32 字节右侧 0x00 补齐；签名线上格式为裸 `r‖s`（64 字节）
 - 会话密钥 `SK = SM3(x(ECDH) ‖ RA ‖ RB ‖ ID_A ‖ ID_B ‖ nonce)`
 - 点线上编码 `x(32)‖y(32)`（128 hex，无 04 前缀）；配置文件为 `.properties` 格式
 

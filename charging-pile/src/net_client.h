@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <map>
 #include <string>
-#include <vector>
 
 // ============================================================================
 // TCP 长连接客户端（生产化替换原逐字节 read 的简化实现）。
@@ -28,10 +27,6 @@ public:
 
     // 读取一行（不含 '\n'）。超时/关闭/超长抛 std::runtime_error。
     std::string read_line();
-
-    // 二进制帧收发：发送原始字节 / 精确读满 len 字节。失败抛 std::runtime_error。
-    void write_bytes(const std::vector<unsigned char>& data);
-    std::vector<unsigned char> read_exact(std::size_t len);
 
     void close();
 
