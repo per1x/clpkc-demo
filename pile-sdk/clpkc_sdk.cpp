@@ -280,6 +280,7 @@ BIGNUM* compute_lambda(const Curve& c, const EC_POINT* w, const Bytes& ha) {
 // SM2 签名核心：对已构造好的 transcript 签名，ZA 用 32 字节 ID
 std::string sm2_sign(const Bytes& msg, const Bytes& id32, const std::string& sk_hex) {
     Curve c;
+    hex_fixed(sk_hex, SCALAR_LEN, "私钥");
     BnPtr sk(hex_to_bn(sk_hex), BN_free);
     PointPtr pub(EC_POINT_new(c.group), EC_POINT_free);
     EC_POINT_mul(c.group, pub.get(), sk.get(), nullptr, nullptr, c.ctx);
@@ -410,13 +411,26 @@ bool hmac_sm3_verify(const std::string& key_hex, const std::string& data_hex,
 
 std::string sm2_decrypt(const std::string& d_hex, const std::string& cipher_hex) {
     Curve c;
+    hex_fixed(d_hex, SCALAR_LEN, "d");
     Bytes blob = hex_to_bytes(cipher_hex);
-    if (blob.size() < 65 + 32) {
-        throw Error("SM2 密文长度非法（至少 C1(65)+C3(32)）");
+    if (blob.empty()) {
+        throw Error("SM2 密文为空");
     }
-    Bytes c1(blob.begin(), blob.begin() + 65);
-    Bytes c3(blob.begin() + 65, blob.begin() + 97);
-    Bytes c2(blob.begin() + 97, blob.end());
+    // C1 长度由首字节的点格式决定：04=非压缩(65)，02/03=压缩(33)
+    std::size_t c1_len;
+    switch (blob[0]) {
+        case 0x04: c1_len = 65; break;
+        case 0x02:
+        case 0x03: c1_len = 33; break;
+        default:
+            throw Error("SM2 密文 C1 点格式非法：首字节应为 04/02/03");
+    }
+    if (blob.size() < c1_len + 32) {
+        throw Error("SM2 密文长度非法：不足 C1(" + std::to_string(c1_len) + ")+C3(32)");
+    }
+    Bytes c1(blob.begin(), blob.begin() + c1_len);
+    Bytes c3(blob.begin() + c1_len, blob.begin() + c1_len + 32);
+    Bytes c2(blob.begin() + c1_len + 32, blob.end());
 
     PointPtr c1p(EC_POINT_new(c.group), EC_POINT_free);
     if (!EC_POINT_oct2point(c.group, c1p.get(), c1.data(), c1.size(), c.ctx)
@@ -460,6 +474,8 @@ std::string sm2_decrypt(const std::string& d_hex, const std::string& cipher_hex)
 
 std::string compose_full_private(const std::string& d_hex, const std::string& t_hex) {
     Curve c;
+    hex_fixed(d_hex, SCALAR_LEN, "d");
+    hex_fixed(t_hex, SCALAR_LEN, "t");
     BnPtr d(hex_to_bn(d_hex), BN_free);
     BnPtr t(hex_to_bn(t_hex), BN_free);
     BnPtr out(BN_new(), BN_free);
@@ -486,6 +502,7 @@ bool verify_keypair_consistency(const std::string& sk_hex, const std::string& w_
                                 const std::string& ppub_hex, const std::string& id_hex) {
     try {
         Curve c;
+        hex_fixed(sk_hex, SCALAR_LEN, "SK");
         BnPtr sk(hex_to_bn(sk_hex), BN_free);
         PointPtr lhs(EC_POINT_new(c.group), EC_POINT_free);
         EC_POINT_mul(c.group, lhs.get(), sk.get(), nullptr, nullptr, c.ctx);  // SK·G
@@ -546,6 +563,7 @@ std::string derive_session_key(const std::string& eph_secret_hex, const std::str
                                const std::string& idA_hex, const std::string& idB_hex,
                                const std::string& nonce_hex) {
     Curve c;
+    hex_fixed(eph_secret_hex, SCALAR_LEN, "eph_secret");
     BnPtr a(hex_to_bn(eph_secret_hex), BN_free);
     PointPtr peer(point_from_xy_hex(c, peer_point_hex), EC_POINT_free);
     PointPtr shared(EC_POINT_new(c.group), EC_POINT_free);

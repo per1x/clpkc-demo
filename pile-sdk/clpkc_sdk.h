@@ -49,20 +49,24 @@ struct KeyPair {
 // 1. 密钥与随机数
 // ---------------------------------------------------------------------------
 
-// 生成 SM2 密钥对。长期密钥 (d_B, U_B) 与临时密钥 (b, R_B) 共用此函数。
+// 生成 SM2 密钥对：私钥取 [1,n-1] 内的 CSPRNG 随机数，公钥 = d·G。
+// 长期密钥 (d_B, U_B) 与每次会话的临时密钥 (b, R_B) 都用此函数。失败抛 Error。
 KeyPair generate_keypair();
 
-// CSPRNG 随机字节 → hex（n_bytes 必须 > 0）。握手 nonce / random_A / random_B 用。
+// CSPRNG 随机字节 → 2*n_bytes 个 hex。n_bytes 必须 > 0，否则抛 Error。
+// nonce 与 random_A / random_B 均传 16。
 std::string random_bytes_hex(int n_bytes);
 
 // ---------------------------------------------------------------------------
 // 2. HMAC-SM3（第一阶段挑战应答用）
 // ---------------------------------------------------------------------------
 
-// HMAC-SM3(key, data)：key_hex / data_hex 均先 hex 解码为原始字节再计算。返回 32 字节 hex。
+// HMAC-SM3(key, data)：两个入参均先 hex 解码为原始字节再计算，返回 64 hex / 32 字节。
+// 本协议 key 为 16 字节预共享密钥，data 为 16 字节随机挑战。hex 非法抛 Error。
 std::string hmac_sm3_hex(const std::string& key_hex, const std::string& data_hex);
 
-// 常量时间比较校验 HMAC（防时序侧信道）。格式非法返回 false，不抛异常。
+// 常量时间比较校验 HMAC（防时序侧信道）。校验对端 MAC 必须用本函数。
+// 不抛异常：不匹配或入参非法一律返回 false。
 bool hmac_sm3_verify(const std::string& key_hex, const std::string& data_hex,
                      const std::string& expected_mac_hex);
 
@@ -70,11 +74,13 @@ bool hmac_sm3_verify(const std::string& key_hex, const std::string& data_hex,
 // 3. 隐式证书：部分私钥解密 / 合成 / 公钥重建
 // ---------------------------------------------------------------------------
 
-// SM2 解密（C1C3C2，C1 含 04）。d_hex 为本机私钥(u_B)，cipher_hex 为 KGC 下发的部分私钥密文。
-// 返回明文 t_B 的 hex。单独暴露以便定位问题。
+// SM2 解密（C1C3C2）。d_hex：64 hex/32 字节本机私钥 u_B；
+// cipher_hex：258 hex/129 字节部分私钥密文（C1 含 04）。返回明文 t 的 hex（64 hex/32 字节）。
+// 单独暴露，便于区分是解密失败还是合成失败。长度/格式非法、C3 校验不过均抛 Error。
 std::string sm2_decrypt(const std::string& d_hex, const std::string& cipher_hex);
 
-// 合成完整私钥 SK = (d + t) mod n。d_hex 为本机私钥 u_B，t_hex 为解密出的部分私钥 t_B。
+// 合成完整私钥 SK = (d + t) mod n。两个入参均为 64 hex/32 字节，返回 64 hex/32 字节。
+// 长度不符或 hex 非法抛 Error。
 std::string compose_full_private(const std::string& d_hex, const std::string& t_hex);
 
 // 重建完整公钥 PK = W + λ·Ppub，其中
@@ -84,7 +90,9 @@ std::string compose_full_private(const std::string& d_hex, const std::string& t_
 std::string reconstruct_full_public(const std::string& id_hex, const std::string& w_hex,
                                     const std::string& ppub_hex);
 
-// 自检：验证 SK·G == W + λ·Ppub。开通落地后建议调用一次，确认密钥对自洽。
+// 自检：验证 SK·G == W + λ·Ppub。开通流程落盘前应调用一次，确认密钥材料自洽。
+// 入参：sk 64 hex，w / ppub 各 128 hex，id 64 hex。注意参数顺序与 reconstruct_full_public 不同。
+// 不抛异常：不自洽或入参非法一律返回 false。
 bool verify_keypair_consistency(const std::string& sk_hex, const std::string& w_hex,
                                 const std::string& ppub_hex, const std::string& id_hex);
 
@@ -92,20 +100,25 @@ bool verify_keypair_consistency(const std::string& sk_hex, const std::string& w_
 // 4. 第二阶段：SM2 签名 / 验签（ZA 用 32 字节 ID，ENTL=0x0100）
 // ---------------------------------------------------------------------------
 
-// 发起方(主机)签名。transcript = R_B ‖ ID_B ‖ W_B ‖ nonce_ascii（全定长直拼、无长度前缀）。
-// 返回 64 字节裸 r‖s 的 hex。注：SM2 签名含随机数 k，同样输入每次输出不同（属正常）。
+// 发起方(主机)签名。transcript = R_B(64) ‖ ID_B(32) ‖ W_B(64) ‖ nonce(16)，共 176 字节，
+// 各字段为原始字节、顺序直拼、无长度前缀。入参 rB/wB 各 128 hex，idB 64 hex，
+// nonce 32 hex，sk 64 hex。返回 128 hex/64 字节裸 r‖s。
+// SM2 签名含随机数 k，相同输入每次输出不同，判定以验签为准。入参非法抛 Error。
 std::string sign_initiator(const std::string& rB_hex, const std::string& idB_hex,
                            const std::string& wB_hex, const std::string& nonce_hex,
                            const std::string& sk_hex);
 
-// 验响应方(云)签名。transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce_ascii。
-// sig_raw_hex 为 64 字节裸 r‖s。pk_hex 为云端完整公钥（由 reconstruct_full_public 得到）。
+// 验响应方(云)签名。transcript = R_A(64) ‖ R_B(64) ‖ ID_A(32) ‖ W_A(64) ‖ nonce(16)，共 240 字节。
+// sig_raw_hex 为 128 hex/64 字节裸 r‖s；pk_hex 为云端完整公钥（由 reconstruct_full_public 得到）。
+// 不抛异常：验签不过或入参非法一律返回 false。
 bool verify_responder(const std::string& rA_hex, const std::string& rB_hex,
                       const std::string& idA_hex, const std::string& wA_hex,
                       const std::string& nonce_hex, const std::string& sig_raw_hex,
                       const std::string& pk_hex);
 
-// 【附加】验发起方签名 —— 与 sign_initiator 配对，供集成方离线自检/联调定位使用。
+// 验发起方签名 —— 与 sign_initiator 配对，供集成方离线自检与联调定位。
+// 参数含义同 sign_initiator，另加 sig_raw_hex(128 hex) 与 pk_hex(128 hex)。
+// 不抛异常：验签不过或入参非法一律返回 false。
 bool verify_initiator(const std::string& rB_hex, const std::string& idB_hex,
                       const std::string& wB_hex, const std::string& nonce_hex,
                       const std::string& sig_raw_hex, const std::string& pk_hex);
@@ -114,15 +127,17 @@ bool verify_initiator(const std::string& rB_hex, const std::string& idB_hex,
 // 5. 会话密钥
 // ---------------------------------------------------------------------------
 
-// SK = SM3(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce_ascii)，单次 SM3，输出 32 字节 hex。
-// Sx = 本方临时私钥 × 对端临时公钥 得到点的 X 坐标（32 字节）。
-//   桩端调用：eph_secret=b(自己的临时私钥)，peer_point=R_A(云临时公钥)。
+// SK = SM3(Sx(32) ‖ R_A(64) ‖ R_B(64) ‖ ID_A(32) ‖ ID_B(32) ‖ nonce(16))，共 240 字节输入，
+// 单次 SM3，返回 64 hex/32 字节。Sx = 本方临时私钥 × 对端临时公钥 所得点的 X 坐标。
+// 桩端固定传 eph_secret=b(自己的临时私钥)、peer_point=R_A(云临时公钥)；
+// 而 rA/rB 与 idA/idB 无论哪一端都按「云在前、桩在后」传入。入参非法抛 Error。
 std::string derive_session_key(const std::string& eph_secret_hex, const std::string& peer_point_hex,
                                const std::string& rA_hex, const std::string& rB_hex,
                                const std::string& idA_hex, const std::string& idB_hex,
                                const std::string& nonce_hex);
 
-// 会话密钥(32 字节) → SM4 密钥(16 字节)：**取前 16 字节**。
+// 会话密钥 → SM4 密钥：取 SK 的前 16 字节。入参 64 hex/32 字节，返回 32 hex/16 字节。
+// 长度不符抛 Error。
 std::string session_key_to_sm4(const std::string& sk32_hex);
 
 // ---------------------------------------------------------------------------
@@ -140,13 +155,14 @@ std::string make_id_from_ascii(const std::string& ascii);
 //       → 00000000000001 + 25 个 00
 std::string make_id_from_bcd(const std::string& host_no_decimal);
 
-// 点编码互转：wire 格式 = 64 字节裸 X‖Y（无 04）。
-//   point_to_wire  : 接受 65 字节 SEC1(04‖X‖Y) 或 64 字节裸点 → 统一输出 64 字节裸点。
-//   point_from_wire: 接受 64 字节裸点 → 输出 65 字节 SEC1(04‖X‖Y)，供需要 SEC1 的库使用。
+// 点编码互转（只做格式转换，不做曲线校验；长度不符抛 Error）：
+//   point_to_wire  : 接受 130 hex(65 字节 SEC1 04‖X‖Y) 或 128 hex(64 字节裸点)
+//                    → 统一输出 128 hex 的 64 字节裸点（本协议线上格式）。
+//   point_from_wire: 接受 128 hex 的 64 字节裸点 → 输出 130 hex 的 SEC1(04‖X‖Y)。
 std::string point_to_wire(const std::string& point_hex);
 std::string point_from_wire(const std::string& wire_hex);
 
-// SM3 摘要：data_hex 先 hex 解码再计算，返回 32 字节 hex。
+// SM3 摘要：data_hex 先 hex 解码再计算，返回 64 hex/32 字节。hex 非法抛 Error。
 std::string sm3_hex(const std::string& data_hex);
 
 }  // namespace clpkc
