@@ -26,12 +26,12 @@ import com.clpkc.cloud.service.PileDirectory;
  * <ul>
  *   <li><b>第一阶段（provision，仅首次）</b>：桩发 {@code hmac} → <b>双向</b> HMAC-SM3 挑战应答
  *       （4 条报文，双方各出一个 16 字节随机挑战并互验）→ 转发 KGC 申请部分私钥。
- *       桩拿到后本地持久化，之后不再走此阶段。</li>
+ *       桩拿到后本地持久化，此阶段仅首次执行。</li>
  *   <li><b>第二阶段（session，每次会话）</b>：桩直接发 {@code ka_request} → 云平台核对桩编号、
  *       用声明公钥重构 PA 验签 → 返回签名的 {@code ka_response} → 双方派生会话密钥。</li>
  * </ul>
  *
- * <p>两个阶段都由桩（主机）发起，云不下发 challenge。第一阶段用 random_A/random_B 双向挑战应答做
+ * <p>两个阶段均由桩（主机）发起，云不下发 challenge。第一阶段用 random_A/random_B 双向挑战应答做
  * 身份互认；第二阶段的 nonce 由桩自生成（本次会话的新鲜随机数，绑定签名防重放），随桩的首报文发来，
  * 云只复用不重新生成。HMAC 认证与部分私钥申请只在第一阶段发生。</p>
  */
@@ -71,7 +71,7 @@ public final class PileSessionHandler implements Runnable {
     }
 
     private void handle(InputStream in, BufferedWriter writer, String peer) throws IOException {
-        // 桩（主机）发起：云不再下发 challenge，直接读桩的首报文并按类型分流。
+        // 桩（主机）发起：云不下发 challenge，直接读桩的首报文并按类型分流。
         Map<String, String> msg = JsonCodec.parse(readLine(in));
         String type = msg.get("type");
         if ("hmac".equals(type)) {

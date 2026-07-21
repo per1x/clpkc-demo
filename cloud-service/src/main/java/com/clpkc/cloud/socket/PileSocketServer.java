@@ -20,8 +20,8 @@ import com.clpkc.cloud.service.PileDirectory;
 /**
  * 对充电桩的 TCP 长连接 Socket 服务端。
  *
- * <p>相对原 Demo 的生产化改造：由单线程串行 accept 改为<b>固定线程池并发</b>处理多桩连接；
- * 随 Spring 生命周期启动/优雅关闭；每连接设读超时与单行长度上限。配置用 {@code @Value} 读取。</p>
+ * <p>用<b>固定线程池并发</b>处理多桩连接；随 Spring 生命周期启动/优雅关闭；
+ * 每连接设读超时与单行长度上限。配置用 {@code @Value} 读取。</p>
  */
 @Component
 public class PileSocketServer implements SmartLifecycle {

@@ -1,7 +1,7 @@
-# CL-PKC 三端系统（生产化改造版）
+# CL-PKC 三端系统
 
-基于无证书公钥密码学（Certificateless PKC）的 KGC / 云平台 / 充电桩三端系统。
-本仓库在原始联调 Demo（见 [`legacy-demo/`](legacy-demo/)）基础上做了生产化改造。
+基于无证书公钥密码学（Certificateless PKC）的 KGC / 云平台 / 充电桩三端系统，
+采用国密 SM2/SM3/HMAC-SM3 与隐式证书（ECQV/SM2 风格）方案。
 
 ## 架构
 
@@ -21,23 +21,24 @@
 | `cloud-service/` | 云平台（Spring Boot 3 / JDK 17，**独立 Maven 工程**）。密码学在自己的 `com.clpkc.cloud.crypto` 包内（与 KGC 各一份）。 |
 | `charging-pile/` | 充电桩 C++ 客户端（CMake / OpenSSL）。 |
 | `scripts/` | 构建与联调脚本。 |
-| `legacy-demo/` | 原始 Demo 存档。 |
+| `pile-sdk/` | 桩端（主机端）密码学 SDK（C++17 / OpenSSL），含 KAT 测试向量。 |
+| `legacy-demo/` | 早期联调 Demo 存档，不参与构建。 |
 
 > 密码学库（`Hex`/`EcCurve`/`ClpkcCrypto`）**不做共享模块，各服务各自持有一份**；每个服务是独立工程，可单独 `mvn -f <service>/pom.xml package`。国密 SM2+SM3（BouncyCastle），隐式证书方案（`WA`/`λ`/`tA`、`dA=tA+ua`、`PA=WA+λ·Ppub`）。
 
-## 相对原 Demo 的主要改造
+## 实现要点
 
-- **国密算法 + 隐式证书方案**：切换到 **SM2 + SM3 + HMAC-SM3**，无证书部分采用**隐式证书（ECQV/SM2 风格）**——与现网 KGC 对齐：KGC 出 `WA=wG+UA`、`tA=(w+λ·ms) mod n`，设备合成 `dA=tA+ua`，验证方用 `PA=WA+λ·Ppub` **重构公钥、无需预存**。Java 用 BouncyCastle、C++ 用 OpenSSL；SM2 密文 = C1C3C2 原始拼接（桩端手动解密），SM2 签名线上格式 = 裸 `r‖s`（64 字节），均已跨实现互通验证（P0-2 / P1-8）。
-- **KGC 主密钥**：不再每次启动随机生成，改为从配置注入（P0-4）。
-- **预共享密钥**：从源码硬编码改为外置配置（全局常量，P0-5）。
-- **防重放**：去除时间戳，签名 transcript 与会话密钥改用握手 **nonce** 绑定（P1-6）。
-- **并发**：云平台由单线程串行 accept 改为线程池并发（P2-10）。
-- **IO 健壮性**：桩端逐字节 read 改为缓冲读 + 超时 + 单行长度上限（P2-11）。
-- **日志脱敏**：私钥/会话密钥不落日志，仅输出单向指纹 `SM3(SK)[0:16]`（P2-12）。
-- **JSON/错误处理**：Java 用 Jackson + 参数校验 + 全局异常；C++ 用 nlohmann/json（P2-13）。
-- **配置外置**：端口、地址、密钥全部外置到 `application.properties` / `pile.conf`（P2-14）。
+- **国密算法 + 隐式证书方案**：**SM2 + SM3 + HMAC-SM3**，无证书部分采用**隐式证书（ECQV/SM2 风格）**——与现网 KGC 对齐：KGC 出 `WA=wG+UA`、`tA=(w+λ·ms) mod n`，设备合成 `dA=tA+ua`，验证方用 `PA=WA+λ·Ppub` **重构公钥、无需预存**。Java 用 BouncyCastle、C++ 用 OpenSSL；SM2 密文 = C1C3C2 原始拼接（桩端手动解密），SM2 签名线上格式 = 裸 `r‖s`（64 字节），两套实现跨语言互通（见 [`pile-sdk/kat.md`](pile-sdk/kat.md)）。
+- **KGC 主密钥**：从配置注入，进程重启不变。
+- **预共享密钥**：外置配置（桩与云共享的全局常量）。
+- **防重放**：签名 transcript 与会话密钥均绑定握手 **nonce**（不使用时间戳）。
+- **并发**：云平台 TCP Socket 服务端用线程池并发处理桩连接。
+- **IO 健壮性**：桩端缓冲读 + 连接/读超时 + 单行长度上限。
+- **日志脱敏**：私钥/会话密钥不落日志，仅输出单向指纹 `SM3(SK)[0:16]`。
+- **JSON/错误处理**：Java 用 Jackson + 参数校验 + 全局异常；C++ 用 nlohmann/json。
+- **配置外置**：端口、地址、密钥全部在 `application.properties` / `pile.conf` 中配置。
 
-> 暂不做：Pile↔Cloud 的 TLS（交给 NGINX）、KGC 调用方鉴权、身份绑定强校验、证书吊销、会话密钥之上的应用数据加密通道。
+> 范围外（当前不实现）：Pile↔Cloud 的 TLS（交给 NGINX）、KGC 调用方鉴权、身份绑定强校验、证书吊销、会话密钥之上的应用数据加密通道。
 
 ## 环境要求
 
@@ -74,22 +75,17 @@ KGC（`kgc-service/src/main/resources/application.properties`）：
 充电桩（`charging-pile/config/pile.conf`，环境变量可覆盖）：
 `pile.host_no`(主机编号，≤14 位十进制) / `cloud.host` / `cloud.port` / `shared.key.hex` / `connect.timeout.ms` / `read.timeout.ms`。
 
-## 协议要点（改造后）
+## 协议要点
 
-> ⚠️ **破坏性变更（四端必须同版本）**：ID 由「ASCII 串零补齐」改为「桩=7B BCD 主机编号 / 云=域名 ASCII」，
-> 且线上 `id` 字段改传 **64 字符 hex**；nonce 进 transcript/KDF 由 hex 文本改为 **16 原始字节**。
-> **旧 `pile-keystore.json` 全部失效，需删除后重新开通。**
-
-
-**两阶段拆分**：桩（主机）发起，云平台**不再下发 challenge**——桩自生成本次会话的新鲜 `nonce`（16 字节，绑定签名防重放）并随首报文发给云，云只复用不重新生成；云按桩发来的报文类型分流：
+**两阶段拆分**：桩（主机）发起，云平台不下发 challenge——桩自生成本次会话的新鲜 `nonce`（16 字节，绑定签名防重放）并随首报文发给云，云复用该 nonce；云按桩发来的报文类型分流：
 
 - **第一阶段（仅首次，provision）**：**双向 HMAC-SM3 挑战应答**（4 条报文）——桩发 `hmac(id, publicKey, randomB)` → 云回 `hmac_challenge(mac=HMAC(PSK,randomB), randomA)` 自证身份并反向挑战 → 桩**验证云的 MAC**（不过即中止）后回 `hmac_response(mac=HMAC(PSK,randomA))` → 云验证通过回 `auth_ok`。随后 `partial_key_request` → 云平台转发 KGC → `partial_key_response(claimedPublic WA, partialPrivate, masterPublicKey)`。桩组合 `dA` 后**本地持久化**（`pile-keystore.json`）。`random_A`/`random_B` 各 16 字节、每次连接新鲜生成。
-- **第二阶段（每次会话，session）**：桩加载本地密钥，直接发 `ka_request(id, claimedPublic, rB, nonce, sig)`（msg1）→ 云平台核对桩编号(见 `PileDirectory`)、重构 `PA` 验发起方签名 → 回 `ka_response`（msg2，含云临时公钥 `rA` 与响应方签名）→ 双方派生会话密钥。**不再走 HMAC、不再申请 KGC。**
+- **第二阶段（每次会话，session）**：桩加载本地密钥，直接发 `ka_request(id, claimedPublic, rB, nonce, sig)`（msg1）→ 云平台核对桩编号(见 `PileDirectory`)、重构 `PA` 验发起方签名 → 回 `ka_response`（msg2，含云临时公钥 `rA` 与响应方签名）→ 双方派生会话密钥。本阶段不涉及 HMAC 认证与 KGC 申请。
 
 密码学细节：
 
-- **编码总则：所有进哈希/签名的字段一律使用「解码后的原始字节」，绝不使用 hex 文本**（hex 只是接口传参形式）。
-  nonce 早期在 transcript/KDF 里曾以 hex 文本的 ASCII 参与（32 字节），现已统一为解码后的 **16 原始字节**（破坏性变更）。
+- **编码总则：所有进哈希/签名的字段一律使用「解码后的原始字节」，绝不使用 hex 文本**（hex 只是配置与接口的传参形式）。
+  各字段进哈希时的字节数：曲线点 64、ID 32、nonce 16、`Sx` 32、签名 `r‖s` 各 32。
 - **ID 统一 32 字节**：transcript、会话密钥 KDF、身份摘要 HA(算 λ)、SM2 签名 ZA **四处一致**，ENTL 恒为 `0x0100`(=256bit)。
   线上报文与 KGC HTTP 接口的 `id` 字段一律传 **64 字符 hex**（32 字节 ID 的十六进制），收到后解码成 32 字节直接进密码学层。
   - **桩 ID_B** = 7 字节 BCD 主机编号 ‖ 25 字节 `0x00`。主机编号为 ≤14 位十进制数字串，
@@ -104,7 +100,24 @@ KGC（`kgc-service/src/main/resources/application.properties`）：
 - 身份摘要 `HA = SM3(0x0100 ‖ ID32 ‖ a ‖ b ‖ Gx ‖ Gy ‖ Ppub.x ‖ Ppub.y)`；`λ = SM3(WA.x ‖ WA.y ‖ HA)`
 - 完整密钥 `dA = (tA + ua) mod n`，`PA = WA + λ·Ppub`（验证方重构，无需预存公钥）
 - SM2 签名 transcript（**全定长字段直拼、无长度前缀**）：发起方（桩）签 `R_B ‖ ID_B ‖ W_B ‖ nonce`，响应方（云）签 `R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce`；ID 为上述 32 字节形态；签名线上格式为裸 `r‖s`（64 字节）
-- 会话密钥 `SK = SM3(x(ECDH) ‖ RA ‖ RB ‖ ID_A ‖ ID_B ‖ nonce)`
+- 会话密钥 `SK = SM3(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)`，单次 SM3，输出 32 字节。
+  `Sx` 为本方临时私钥 × 对端临时公钥所得点的 X 坐标（32 字节定长）。
+- **SM4 密钥**取会话密钥 `SK` 的**前 16 字节**。
 - 点线上编码 `x(32)‖y(32)`（128 hex，无 04 前缀）；配置文件为 `.properties` 格式
 
-详见 [`legacy-demo/clpkc-demo/docs/CLPKC_PROTOCOL.md`](legacy-demo/clpkc-demo/docs/CLPKC_PROTOCOL.md)（时间戳相关部分以本节为准）。
+### 字段长度表
+
+| 字段 | 长度 | 说明 |
+|---|---|---|
+| 曲线点 `UA`/`WA`/`R_A`/`R_B`/`Ppub`/`PA` | **64 字节** | 裸 `X‖Y`，128 hex，不含 `04` 前缀 |
+| 标量 `ua`/`tA`/`dA`/临时私钥 | **32 字节** | 大端定长，左侧补 0，64 hex |
+| `ID_A` / `ID_B` | **32 字节** | 见上；线上传 64 hex |
+| `nonce` | **16 字节** | 进 transcript/KDF 用原始字节 |
+| `random_A` / `random_B` | **16 字节** | 第一阶段挑战值，进 HMAC 用原始字节 |
+| SM2 签名 | **64 字节** | 裸 `r‖s`，各 32 字节定长，128 hex |
+| HMAC-SM3 输出 | **32 字节** | 64 hex |
+| SM2 密文（部分私钥） | **129 字节** | C1C3C2：C1(65，含 `04`) ‖ C3(32) ‖ C2(32)，258 hex |
+| 会话密钥 `SK` | **32 字节** | SM4 密钥取其前 16 字节 |
+| `HA` / `λ` | **32 字节** | SM3 输出；`λ` 按大端无符号整数取用 |
+
+算法与测试向量的完整说明见 [`pile-sdk/README.md`](pile-sdk/README.md) 与 [`pile-sdk/kat.md`](pile-sdk/kat.md)。

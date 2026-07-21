@@ -135,7 +135,7 @@ std::string session_key_to_sm4(sk32_hex);   // 取前 16 字节
 `Sx` = 本方临时私钥 × 对端临时公钥 得到点的 X 坐标。
 主机端调用时：`eph_secret = b`（自己的临时私钥），`peer_point = R_A`（云的临时公钥）。
 
-> `session_key_to_sm4` 取**前 16 字节**。此取用规则原规范未定义，为本 SDK 的约定，**待双方确认**。
+> `session_key_to_sm4` 取会话密钥的**前 16 字节**作为 SM4 密钥。
 
 ### 6. 编码辅助
 
@@ -165,7 +165,7 @@ try {
     auto id = clpkc::make_id_from_bcd("00000000000001");  // 桩 ID_B
     auto sk = clpkc::compose_full_private(d_hex, t_hex);
     if (!clpkc::verify_keypair_consistency(sk, w_hex, ppub_hex, id)) {
-        // 密钥对不自洽 —— 不要落盘，重新开通
+        // 密钥对不自洽 —— 不要落盘，重新执行开通流程
     }
 } catch (const clpkc::Error& e) {
     // e.what() 记日志

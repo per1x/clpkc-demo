@@ -22,12 +22,17 @@ import org.bouncycastle.math.ec.ECPoint;
  * CL-PKC 协议密码学原语（国密 SM2/SM3，隐式证书方案，无状态）。
  *
  * <p>WA=wG+UA，tA=(w+λ·ms) mod n，dA=tA+ua，PA=WA+λ·Ppub；
- * HA=SM3(len2B(id)‖id‖a‖b‖Gx‖Gy‖PpubX‖PpubY)，λ=SM3(WAx‖WAy‖HA)。
- * SM2 公钥加密（C1C3C2 原始拼接）、SM2 数字签名（线上裸 r‖s，64 字节）、HMAC-SM3。</p>
+ * HA=SM3(0x0100‖ID32‖a‖b‖Gx‖Gy‖PpubX‖PpubY)，λ=SM3(WAx‖WAy‖HA)。
+ * SM2 公钥加密（C1C3C2 原始拼接，C1 含 04，共 129 字节）、
+ * SM2 数字签名（线上裸 r‖s，64 字节；32 字节 ID 作 ZA，ENTL=0x0100）、HMAC-SM3（32 字节）。</p>
+ *
+ * <p>编码总则：所有进哈希/签名的字段一律使用解码后的原始字节（点 64、ID 32、nonce 16、Sx 32），
+ * 不使用 hex 文本；hex 仅为接口传参形式。ID 线上/接口传 64 字符 hex，
+ * 桩 ID_B = 7 字节 BCD 主机编号 ‖ 25 字节 0x00，云 ID_A = 域名 ASCII ‖ 0x00 补齐到 32 字节。</p>
  */
 public final class ClpkcCrypto {
 
-    /** transcript / KDF 拼接里 ID 的定长字节数（右侧 0x00 补齐）。 */
+    /** ID 定长字节数（HA / ZA / transcript / KDF 四处一致）。 */
     private static final int ID_FIXED_LEN = 32;
 
     private final EcCurve curve;

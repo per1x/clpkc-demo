@@ -512,7 +512,7 @@ BIGNUM* CryptoUtils::hex_to_bn(const std::string& hex) const {
 }
 
 namespace {
-// 显式 hex 解析：非法字符一律抛 std::runtime_error（不再用 std::stoul，避免抛 invalid_argument）
+// 显式 hex 解析：非法字符一律抛 std::runtime_error
 int hex_val_of(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;

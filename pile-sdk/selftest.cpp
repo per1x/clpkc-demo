@@ -114,7 +114,7 @@ int main() {
     check_bool("hmac_sm3_verify 错误 MAC",
                clpkc::hmac_sm3_verify(PSK, NONCE, std::string(64, '0')), false);
 
-    // --- KAT-3 ID 构造（新规则）---
+    // --- KAT-3 ID 构造 ---
     std::printf("[KAT-3] ID 构造：桩 BCD 主机编号 / 云 域名 ASCII\n");
     check("make_id_from_bcd(\"00000000000001\")", clpkc::make_id_from_bcd(HOST_NO), ID_PILE_HEX);
     check("make_id_from_bcd(\"1\") 左补0 等价", clpkc::make_id_from_bcd("1"), ID_PILE_HEX);

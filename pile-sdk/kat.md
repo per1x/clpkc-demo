@@ -12,9 +12,6 @@ cd build && make test      # 或直接 ./clpkc_selftest
 ```
 当前状态：**35 项全部通过**。
 
-> ⚠️ **破坏性变更**：本版 ID 规则已改（桩=7B BCD 主机编号 / 云=域名 ASCII，线上传 64 hex），
-> 且 nonce 进 transcript/KDF 改为 16 原始字节。**旧向量、旧 keystore 全部失效，需重新开通。**
-
 ---
 
 ## 0. 通用约定
@@ -25,8 +22,7 @@ cd build && make test      # 或直接 ./clpkc_selftest
   - **桩 ID_B** = 7 字节 BCD 主机编号 ‖ 25 字节 `0x00`（主机编号 ≤14 位十进制，不足**左侧补 `'0'`**）
   - **云 ID_A** = 域名 ASCII 字节 ‖ `0x00` 补齐到 32 字节
 - **统一规则：所有进哈希/签名的字段一律「解码后的原始字节」，绝不用 hex 文本。**
-  nonce 在 transcript / KDF / HMAC **三处都是解码后的 16 原始字节**（早期版本 transcript/KDF
-  曾用 hex 文本的 ASCII，已于本次统一修正，属破坏性变更）。
+  nonce 在 transcript / KDF / HMAC 三处都是解码后的 **16 原始字节**。
 
 ---
 
@@ -82,7 +78,7 @@ hmac_sm3_verify(psk, nonce, 上值) → true
 hmac_sm3_verify(psk, nonce, 全 0)  → false
 ```
 
-### KAT-3 ID 构造（新规则）
+### KAT-3 ID 构造
 ```
 // 桩 ID_B：7 字节 BCD 主机编号 ‖ 25 字节 0x00
 make_id_from_bcd("00000000000001")   → 0000000000000100000000000000000000000000000000000000000000000000

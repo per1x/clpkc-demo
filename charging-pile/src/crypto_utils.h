@@ -9,15 +9,17 @@
 // @file crypto_utils.h
 // @brief CL-PKC 充电桩密码学工具（国密 SM2/SM3，隐式证书方案，OpenSSL）。
 //
-// 与 Java clpkc-core（BouncyCastle）字节级对齐：
+// 与 Java 侧（BouncyCastle）实现字节级对齐：
 //   - 曲线 SM2；点线上编码 x(32)‖y(32)（128 hex，无 04 前缀）；
 //   - 完整私钥 dA = (tA + ua) mod n；完整公钥 PA = WA + λ·Ppub；
-//     HA = SM3(len2B(id)‖id‖a‖b‖Gx‖Gy‖PpubX‖PpubY)，λ = SM3(WAx‖WAy‖HA)；
-//   - 部分私钥用标准 SM2 公钥加密（C1C3C2 原始拼接），此处手动 C1C3C2 解密；
-//   - 会话签名用标准 SM2 数字签名（线上裸 r‖s 64 字节，id 作 ZA 用户标识）；
-//   - 会话密钥 = SM3(x(ECDH)‖ra‖rb‖idA‖idB‖nonce)。
+//     HA = SM3(0x0100‖ID32‖a‖b‖Gx‖Gy‖PpubX‖PpubY)，λ = SM3(WAx‖WAy‖HA)；
+//   - 部分私钥用标准 SM2 公钥加密（C1C3C2 原始拼接，C1 含 04，共 129 字节），此处手动解密；
+//   - 会话签名用标准 SM2 数字签名（线上裸 r‖s 64 字节，32 字节 ID 作 ZA 用户标识，ENTL=0x0100）；
+//   - 会话密钥 SK = SM3(Sx‖R_A‖R_B‖ID_A‖ID_B‖nonce)，单次 SM3 出 32 字节。
 //   - **编码总则：所有进哈希/签名的字段一律用「解码后的原始字节」，不用 hex 文本**；
-//     nonce 亦然（transcript/KDF/HMAC 三处都是解码后的 16 原始字节）。ID 为 32 字节零补齐。
+//     进哈希字节数：点 64、ID 32、nonce 16、Sx 32。
+//   - ID 为 32 字节，线上/接口传 64 字符 hex：桩 ID_B = 7 字节 BCD 主机编号 ‖ 25 字节 0x00；
+//     云 ID_A = 域名 ASCII ‖ 0x00 补齐到 32 字节。
 // ============================================================================
 
 struct KeyMaterial {

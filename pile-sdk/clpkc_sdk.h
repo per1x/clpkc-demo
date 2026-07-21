@@ -10,17 +10,21 @@
 //   本 SDK 不含：文件/keystore 存储、网络通信、报文封装/解析、流程编排、重试超时。
 //   这些由集成方(主机端应用)自行实现。
 //
-// 约定（详见 README.md，与现网 Java 云端实现逐字节一致）：
+// 约定（详见 README.md，与 Java 云端实现逐字节一致）：
 //   - 所有入参/返回值均为 **hex 字符串**（输入大小写不敏感，输出一律小写）。
+//   - **统一规则：所有进哈希/签名的字段一律使用「解码后的原始字节」，绝不使用 hex 文本。**
+//     进哈希时各字段字节数：曲线点 64、ID 32、nonce 16、Sx 32、签名 r‖s 各 32。
 //   - 曲线点：64 字节裸 X‖Y（128 hex，**不含 04 前缀**）。
 //   - 标量/私钥：32 字节（64 hex）。
 //   - 签名：64 字节裸 r‖s（128 hex，**非 DER**）。
-//   - ID：**32 字节**（64 hex），不足右侧补 0x00；HA / ZA / transcript / KDF 四处统一，
-//         ENTL 恒为 0x0100（256 bit）。用 make_id_from_ascii / make_id_from_bcd 构造。
-//   - **统一规则：所有进哈希/签名的字段一律使用「解码后的原始字节」，绝不使用 hex 文本。**
+//   - ID：**32 字节**（64 hex），HA / ZA / transcript / KDF 四处统一，ENTL 恒为 0x0100（256 bit）。
+//         桩 ID_B 用 make_id_from_bcd(主机编号)，云 ID_A 用 make_id_from_ascii(域名)。
 //   - nonce：以 hex 字符串传入（16 字节 → 32 字符），内部一律 hex 解码为 **16 原始字节**
 //         后参与 transcript / KDF / HMAC（三处一致）。长度不符直接报错。
 //   - SM2 密文：C1C3C2 原始拼接，C1 含 04 前缀，共 129 字节（258 hex）。
+//   - HMAC-SM3 输出 32 字节；第一阶段 random_A/random_B 各 16 字节。
+//   - 会话密钥 SK = SM3(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)，32 字节；
+//     SM4 密钥取 SK 前 16 字节。
 //
 // 错误处理：
 //   - 入参非法/内部失败 → 抛 clpkc::Error（派生自 std::runtime_error）。
