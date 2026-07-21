@@ -26,6 +26,7 @@ constexpr std::size_t ID_LEN = 32;      // ID 定长 32 字节
 constexpr std::size_t SCALAR_LEN = 32;  // 标量/坐标定长 32 字节
 constexpr std::size_t POINT_LEN = 64;   // 裸点 X‖Y
 constexpr std::size_t SIG_LEN = 64;     // 裸签名 r‖s
+constexpr std::size_t NONCE_LEN = 16;   // nonce 原始字节
 
 // SM2 曲线上下文。每次调用构造/析构 → 无全局状态、天然线程安全。
 struct Curve {
@@ -168,9 +169,9 @@ Bytes concat(const std::vector<Bytes>& fields) {
     return out;
 }
 
-// nonce 参与 transcript/KDF 时绑定的是其 hex 串的 ASCII 字节（既定互通约定）
-Bytes nonce_ascii(const std::string& nonce_hex) {
-    return Bytes(nonce_hex.begin(), nonce_hex.end());
+// nonce 参与 transcript/KDF 时用 **hex 解码后的 16 原始字节**（与其它字段统一）
+Bytes nonce_bytes(const std::string& nonce_hex) {
+    return hex_fixed(nonce_hex, NONCE_LEN, "nonce");
 }
 
 EVP_PKEY* make_sm2_pkey(const Bytes& pub_sec1, const BIGNUM* priv) {
@@ -505,7 +506,7 @@ std::string sign_initiator(const std::string& rB_hex, const std::string& idB_hex
                            const std::string& sk_hex) {
     Bytes id32 = hex_fixed(idB_hex, ID_LEN, "ID_B");
     Bytes msg = concat({hex_fixed(rB_hex, POINT_LEN, "R_B"), id32,
-                        hex_fixed(wB_hex, POINT_LEN, "W_B"), nonce_ascii(nonce_hex)});
+                        hex_fixed(wB_hex, POINT_LEN, "W_B"), nonce_bytes(nonce_hex)});
     return sm2_sign(msg, id32, sk_hex);
 }
 
@@ -515,7 +516,7 @@ bool verify_initiator(const std::string& rB_hex, const std::string& idB_hex,
     try {
         Bytes id32 = hex_fixed(idB_hex, ID_LEN, "ID_B");
         Bytes msg = concat({hex_fixed(rB_hex, POINT_LEN, "R_B"), id32,
-                            hex_fixed(wB_hex, POINT_LEN, "W_B"), nonce_ascii(nonce_hex)});
+                            hex_fixed(wB_hex, POINT_LEN, "W_B"), nonce_bytes(nonce_hex)});
         return sm2_verify(msg, id32, sig_raw_hex, pk_hex);
     } catch (const std::exception&) {
         return false;
@@ -529,7 +530,7 @@ bool verify_responder(const std::string& rA_hex, const std::string& rB_hex,
     try {
         Bytes id32 = hex_fixed(idA_hex, ID_LEN, "ID_A");
         Bytes msg = concat({hex_fixed(rA_hex, POINT_LEN, "R_A"), hex_fixed(rB_hex, POINT_LEN, "R_B"),
-                            id32, hex_fixed(wA_hex, POINT_LEN, "W_A"), nonce_ascii(nonce_hex)});
+                            id32, hex_fixed(wA_hex, POINT_LEN, "W_A"), nonce_bytes(nonce_hex)});
         return sm2_verify(msg, id32, sig_raw_hex, pk_hex);
     } catch (const std::exception&) {
         return false;
@@ -552,13 +553,13 @@ std::string derive_session_key(const std::string& eph_secret_hex, const std::str
     BnPtr sx(BN_new(), BN_free), sy(BN_new(), BN_free);
     EC_POINT_get_affine_coordinates(c.group, shared.get(), sx.get(), sy.get(), c.ctx);
 
-    // SK = SM3(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce_ascii)，单次 SM3
+    // SK = SM3(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)，单次 SM3
     Bytes z = concat({coord_bytes(sx.get()),
                       hex_fixed(rA_hex, POINT_LEN, "R_A"),
                       hex_fixed(rB_hex, POINT_LEN, "R_B"),
                       hex_fixed(idA_hex, ID_LEN, "ID_A"),
                       hex_fixed(idB_hex, ID_LEN, "ID_B"),
-                      nonce_ascii(nonce_hex)});
+                      nonce_bytes(nonce_hex)});
     return bytes_to_hex(sm3(z));
 }
 

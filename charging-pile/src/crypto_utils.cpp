@@ -220,7 +220,7 @@ std::string CryptoUtils::sign_initiator(const std::string& r_pile_hex, const std
         hex_to_bytes(r_pile_hex),
         id_fixed(id),
         hex_to_bytes(w_hex),
-        std::vector<unsigned char>(nonce.begin(), nonce.end())});
+        hex_to_bytes(nonce)});
     return sm2_sign(msg, id, full_private_hex);
 }
 
@@ -268,7 +268,7 @@ bool CryptoUtils::verify_responder(const std::string& r_a_hex, const std::string
         hex_to_bytes(r_b_hex),
         id_fixed(id),
         hex_to_bytes(w_hex),
-        std::vector<unsigned char>(nonce.begin(), nonce.end())});
+        hex_to_bytes(nonce)});
     return sm2_verify(msg, id, sig_raw_hex, full_public_hex);
 }
 
@@ -325,7 +325,7 @@ std::string CryptoUtils::derive_session_key(const std::string& eph_secret_hex, c
         hex_to_bytes(rb_hex),
         id_fixed(ida),
         id_fixed(idb),
-        std::vector<unsigned char>(nonce.begin(), nonce.end())});
+        hex_to_bytes(nonce)});
     return bytes_to_hex(sm3(z));
 }
 
@@ -348,9 +348,9 @@ bool CryptoUtils::hmac_sm3_verify(const std::string& key_hex, const std::string&
     return CRYPTO_memcmp(actual.data(), expected_mac_hex.data(), actual.size()) == 0;
 }
 
-std::string CryptoUtils::sm3_hex_of_ascii(const std::string& ascii) const {
-    std::vector<unsigned char> bytes(ascii.begin(), ascii.end());
-    return bytes_to_hex(sm3(bytes));
+// SM3(data)：入参为 hex，先解码为原始字节再摘要（统一「进哈希一律原始字节」规则）
+std::string CryptoUtils::sm3_hex(const std::string& data_hex) const {
+    return bytes_to_hex(sm3(hex_to_bytes(data_hex)));
 }
 
 // ---------------------------------------------------------------------------

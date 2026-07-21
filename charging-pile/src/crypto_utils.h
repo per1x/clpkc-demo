@@ -16,6 +16,8 @@
 //   - 部分私钥用标准 SM2 公钥加密（C1C3C2 原始拼接），此处手动 C1C3C2 解密；
 //   - 会话签名用标准 SM2 数字签名（线上裸 r‖s 64 字节，id 作 ZA 用户标识）；
 //   - 会话密钥 = SM3(x(ECDH)‖ra‖rb‖idA‖idB‖nonce)。
+//   - **编码总则：所有进哈希/签名的字段一律用「解码后的原始字节」，不用 hex 文本**；
+//     nonce 亦然（transcript/KDF/HMAC 三处都是解码后的 16 原始字节）。ID 为 32 字节零补齐。
 // ============================================================================
 
 struct KeyMaterial {
@@ -59,7 +61,7 @@ public:
     // 常量时间校验 HMAC-SM3（第一阶段双向挑战应答，验云端 MAC 用）
     bool hmac_sm3_verify(const std::string& key_hex, const std::string& data_hex,
                          const std::string& expected_mac_hex);
-    std::string sm3_hex_of_ascii(const std::string& ascii) const;
+    std::string sm3_hex(const std::string& data_hex) const;
 
 private:
     // 手动 SM2 C1C3C2 解密（明文返回 hex）

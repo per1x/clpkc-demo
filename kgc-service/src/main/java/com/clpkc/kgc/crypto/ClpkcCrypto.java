@@ -217,7 +217,7 @@ public final class ClpkcCrypto {
         ECPoint shared = curve.multiply(curve.pointFromHex(peerPointHex), ephemeralScalar);
         byte[] sharedX = curve.toFixed(shared.normalize().getAffineXCoord().toBigInteger(), EcCurve.SCALAR_LEN);
         byte[] digest = EcCurve.sm3(concat(sharedX, ra, rb,
-            fixedId(idA), fixedId(idB), nonce.getBytes(StandardCharsets.UTF_8)));
+            fixedId(idA), fixedId(idB), Hex.decode(nonce)));
         return Hex.encode(digest);
     }
 
@@ -253,12 +253,12 @@ public final class ClpkcCrypto {
 
     /** 发起方 transcript：R_B ‖ ID_B ‖ W_B ‖ nonce（全定长字段直拼，无长度前缀）。 */
     private byte[] transcriptInitiator(byte[] rB, String idB, byte[] wB, String nonce) {
-        return concat(rB, fixedId(idB), wB, nonce.getBytes(StandardCharsets.UTF_8));
+        return concat(rB, fixedId(idB), wB, Hex.decode(nonce));
     }
 
     /** 响应方 transcript：R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce（全定长字段直拼，无长度前缀）。 */
     private byte[] transcriptResponder(byte[] rA, byte[] rB, String idA, byte[] wA, String nonce) {
-        return concat(rA, rB, fixedId(idA), wA, nonce.getBytes(StandardCharsets.UTF_8));
+        return concat(rA, rB, fixedId(idA), wA, Hex.decode(nonce));
     }
 
     /** ID 定长编码：UTF-8 取 {@value #ID_FIXED_LEN} 字节，右侧 0x00 补齐；超长截断并告警。 */

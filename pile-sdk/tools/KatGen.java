@@ -28,11 +28,9 @@ public final class KatGen {
 
     // 冻结进 kat.md 的值（issuePartialKey 含随机 w，故固定下来供反向验签复现）
     static final String FROZEN_W_PILE =
-        "8b77aba1b8eb7a0df8131058f70a530b380e45e97237f10f7d0a6ea1be18e158"
-        + "569211790e4e77e087fdf412cca00c4ffddbffdcb987beac2236b72500fccf7c";
+        "e19562f61b4a2befece57ae868322b80b97ee8bcf32e600524446636ffc5b1419edf41dc326d04460fff721d3a77103ff0446a412069d3e473ab57a0ed7e9d88";
     static final String FROZEN_PK_PILE =
-        "1761f4ec4d1d2edb7d04fc7a187e58b9351db8ee0e79cf6e6494596443da5df9"
-        + "897dc95ef97269cd9061ed27d8f6a8088d9eb24b65fcea6d4f42eee98d8c9ae3";
+        "e05de511ca340f30dfa686f98a4b4fbf0f8c080b22ce7527e8640805db3dbb40d7d421d170566b7e0f550458ce8046092f6be3164c32bfc2080ab392b0182d23";
 
     public static void main(String[] args) {
         ClpkcCrypto crypto = new ClpkcCrypto();

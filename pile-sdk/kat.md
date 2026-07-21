@@ -19,9 +19,9 @@ cd build && make test      # 或直接 ./clpkc_selftest
 - 所有值均为 **hex 字符串**（输出小写）。
 - 点 = 64 字节裸 `X‖Y`（无 04）；标量 = 32 字节；签名 = 64 字节裸 `r‖s`。
 - **ID = 32 字节零补齐**，`HA / ZA / transcript / KDF` 四处统一，ENTL 恒为 `0x0100`。
-- **nonce 有两种用法，切勿混淆**：
-  - 参与 transcript / KDF 时，绑定的是 nonce **hex 串的 ASCII 字节**（32 字节）；
-  - 计算 HMAC 时，用的是 **hex 解码后的 16 原始字节**。
+- **统一规则：所有进哈希/签名的字段一律「解码后的原始字节」，绝不用 hex 文本。**
+  nonce 在 transcript / KDF / HMAC **三处都是解码后的 16 原始字节**（早期版本 transcript/KDF
+  曾用 hex 文本的 ASCII，已于本次统一修正，属破坏性变更）。
 
 ---
 
@@ -51,10 +51,10 @@ cd build && make test      # 或直接 ./clpkc_selftest
 
 | 名称 | 值 |
 |---|---|
-| `W_pile` | `8b77aba1b8eb7a0df8131058f70a530b380e45e97237f10f7d0a6ea1be18e158569211790e4e77e087fdf412cca00c4ffddbffdcb987beac2236b72500fccf7c` |
-| `cipher_pile`（129B C1C3C2） | `0492a18dbd7d05fef39fad26ea10627365c2c9e1893ce43f9c06c9c3e2c608978dddd75a867411622f02466dce443e4e1f48f63e924eab69d52e7eec0d899998540515079cd166c36aa4b0fe51e755bea5ac52e63ed1aa74e64e2c64f1ba5bc3e815bb52d00fbea578e2b1d1a91e2b73b5c219c3b028c2c273cdd43d5d347a4e13` |
-| `W_cloud` | `133a84aff21a13453755a96bd9a245e701be1543d314dbdb1afeefb7a0f9ec73df135d98a634586cb345e796ee18735254c3a57ec92edd8d31e847c9df50c3e7` |
-| `sig_responder`（Java 产出） | `80a095e58290af0544a4a1c31c0bfe4a9a2e766c8a683ec1dc3de44461eb07f2d309b77bbb8a56ff81e817754c74ae9fa93ea6780559339815fe5bb902621790` |
+| `W_pile` | `e19562f61b4a2befece57ae868322b80b97ee8bcf32e600524446636ffc5b1419edf41dc326d04460fff721d3a77103ff0446a412069d3e473ab57a0ed7e9d88` |
+| `cipher_pile`（129B C1C3C2） | `04612b15de497c992f4665dbb7b0e4555913cedbe3e8e26914b917c24573d65653f1162a4b9e508e261f863cf40f38087d9a5f9801637028d3aab01c1d919eaaa2fba908442cf18bd76104fa4d0e23fe57fb7e4beb55f70a57c7cf7853ee036df20dc39390de77301f1dae228c01afe25dbbc11fdbfc6bcb777705c1c5eff9c597` |
+| `W_cloud` | `513766cab63b2c6a4bd2ba643ecda4b54da3b941f46434af3a7427bd8fa2d75bc7c064dcf63a149f82f281c65cac8cc25810ff5a7359ea4a068c4fa85a29d983` |
+| `sig_responder`（Java 产出） | `85d9004a1a7a86798cb6f43471f5bde88f70e228ba4740bd8e8d5f364c1f96a425e2356913cfed174d534636574cdbfafd3012600b885e75c5e13ddc9e6ca966` |
 
 ---
 
@@ -95,22 +95,22 @@ point_to_wire(R_B)          → R_B             (已是裸点，幂等)
 ### KAT-5 SM2 解密（部分私钥）
 ```
 sm2_decrypt(d_hex=ua_pile, cipher_hex=cipher_pile)
-→ t_pile = cbd2186bd0ec4539685dd0391c1c9b99edbad4c891ce9998bf69e311a2535402
+→ t_pile = c3d327ec98da76f2bd7dc2cef6d0bd016ab7ffe0d4e92edbe8d8408d2095f3dd
 ```
 
 ### KAT-6 合成完整私钥
 ```
 compose_full_private(d_hex=ua_pile, t_hex=t_pile)     // (d+t) mod n
-→ SK_pile = dcf44bb02652bcc2015de15b4f60f10065436dc8a2f0ccdd14d05a9a3b536524
+→ SK_pile = d4f55b30ee40ee7b567dd3f12a151267e24098e0e60b62203e3eb815b99604ff
 ```
 
 ### KAT-7 完整公钥重建（λ / HA，ENTL=0x0100）
 ```
 reconstruct_full_public(id_hex=ID32(pile-001), w_hex=W_pile, ppub_hex=Ppub)
-→ PK_pile = 1761f4ec4d1d2edb7d04fc7a187e58b9351db8ee0e79cf6e6494596443da5df9897dc95ef97269cd9061ed27d8f6a8088d9eb24b65fcea6d4f42eee98d8c9ae3
+→ PK_pile = e05de511ca340f30dfa686f98a4b4fbf0f8c080b22ce7527e8640805db3dbb40d7d421d170566b7e0f550458ce8046092f6be3164c32bfc2080ab392b0182d23
 
 reconstruct_full_public(id_hex=ID32(cloud-001), w_hex=W_cloud, ppub_hex=Ppub)
-→ PK_cloud = adacb29b486f2cc7b4a0eb0ac1ca6fc23d2b01e83fe7a748f3a6a319f46b11162ef67795821ddb5c7ee7618d808a9fce96987f6da1a76d49fb575c659d997256
+→ PK_cloud = b1611e3a53ed78714ed8693b70f90bf7c6435e15250d8f2c130bfa3cf5cb46b424ba107e364c097dc26628297bb02705bd86cdaab5b487695816dbb7363dfbed
 ```
 
 ### KAT-8 密钥对自洽
@@ -123,10 +123,10 @@ verify_keypair_consistency(SK_pile, W_pile, Ppub, ID32(cloud-001)) → false   /
 ```
 桩侧: derive_session_key(eph_secret=eph_b, peer_point=R_A, R_A, R_B, ID32(cloud-001), ID32(pile-001), nonce)
 云侧: derive_session_key(eph_secret=eph_a, peer_point=R_B, R_A, R_B, ID32(cloud-001), ID32(pile-001), nonce)
-两者相等 → 4523389b56cc99e56146b7d4fce60ebeeddf9e484b831cd9151f43d4edff5d97
+两者相等 → 5327df76e796b34f9ba804d987c0748628859631ab8e0a53cb5d9618a8eaea80
 
 session_key_to_sm4(上值)     // 取前 16 字节
-→ 4523389b56cc99e56146b7d4fce60ebe
+→ 5327df76e796b34f9ba804d987c07486
 ```
 
 ### KAT-10 验云端(响应方)签名 —— **Java 签、C++ 验**
@@ -165,7 +165,7 @@ session_key_to_sm4("abcd")           → 抛 clpkc::Error（长度非法）
 | **双方会话密钥** | 桩侧/云侧分别派生 | ✅ 相等，且与 Java `deriveSessionKey` 一致 |
 | **外部标准** | `SM3("abc")` 对照 GM/T 0004 标准向量 | ✅ 一致 |
 
-> 这说明 **ID 32 字节补齐、ENTL=0x0100、transcript 拼接顺序、nonce 的 ASCII/原始字节双重用法、
+> 这说明 **ID 32 字节补齐、ENTL=0x0100、transcript 拼接顺序、nonce 的 16 原始字节用法、
 > 点与签名的线上编码** 在 C++ SDK 与 Java 云端之间**逐字节一致**。
 
 ## 4. 如何复现交叉验证

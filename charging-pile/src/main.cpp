@@ -143,7 +143,7 @@ void session(const PileConfig& cfg, CryptoUtils& crypto, const PileKeystore& ks)
     if (session_key.size() != 64) {
         throw std::runtime_error("会话密钥派生异常");
     }
-    std::string fingerprint = crypto.sm3_hex_of_ascii(session_key).substr(0, 16);
+    std::string fingerprint = crypto.sm3_hex(session_key).substr(0, 16);
     LOG_INFO("第二阶段: 会话密钥协商完成（指纹 SM3(SK)[0:16]=" + fingerprint + "，密钥不落日志）。");
 }
 

@@ -180,8 +180,8 @@ public final class PileSessionHandler implements Runnable {
         if (sessionKey.length() != 64) {
             throw new IllegalStateException("session key derivation failed");
         }
-        String fingerprint = Hex.encode(EcCurve.sm3(
-            sessionKey.getBytes(StandardCharsets.UTF_8))).substring(0, 16);
+        // 指纹同样遵循「进哈希一律原始字节」：先 hex 解码再 SM3
+        String fingerprint = Hex.encode(EcCurve.sm3(Hex.decode(sessionKey))).substring(0, 16);
         log.info("[Cloud] 第二阶段与桩 {} 会话密钥协商完成（指纹 SM3(SK)[0:16]={}，密钥不落日志）。",
             pileId, fingerprint);
     }

@@ -49,17 +49,16 @@ cd build && make test        # 跑 KAT 自检（等价 ctest）
 | **ENTL** | 因 ID 定长 32 字节，SM2 的 ENTL **恒为 `0x0100`**（256 bit）。 |
 | **SM2 密文** | C1C3C2 原始拼接，**C1 含 `04`**，共 **129 字节（258 hex）**。 |
 
-### 两个最容易踩的坑
+### 核心规则与一个易踩的坑
 
-1. **nonce 有两种用法**（务必区分，否则跨端对不上）：
-   - 参与 **transcript / 会话密钥 KDF** 时，绑定的是 nonce **hex 串的 ASCII 字节**（32 字节）；
-   - 计算 **HMAC** 时，用的是 hex **解码后的 16 原始字节**。
-
-   SDK 已内部处理：`sign_initiator/verify_responder/derive_session_key` 的 `nonce_hex` 传 hex 串即可；
-   `hmac_sm3_hex` 的 `data_hex` 也传 hex 串（内部会解码）。
+1. **规则：所有进哈希/签名的字段一律使用「解码后的原始字节」，绝不使用 hex 文本。**
+   hex 字符串只是 API 的传参形式，进 SM3/HMAC/签名前一律先解码。
+   nonce 也不例外：传入 32 字符 hex，内部一律解码为 **16 原始字节**，
+   在 transcript / KDF / HMAC **三处完全一致**（长度不符直接报错）。
 
 2. **ID 必须是 32 字节 hex，不是 ASCII 串**。先调 `make_id_from_ascii("pile-001")` 得到
-   64 hex，再传给其它函数。
+   64 hex，再传给其它函数。ID 是唯一"以标识符自身字节参与"的字段（ASCII 零补齐到 32 字节），
+   这与"原始字节"规则一致——它本来就不是 hex 编码的值。
 
 ---
 

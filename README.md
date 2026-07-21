@@ -83,7 +83,10 @@ KGC（`kgc-service/src/main/resources/application.properties`）：
 
 密码学细节：
 
-- 身份摘要 `HA = SM3(len2B(id) ‖ id ‖ a ‖ b ‖ Gx ‖ Gy ‖ Ppub.x ‖ Ppub.y)`；`λ = SM3(WA.x ‖ WA.y ‖ HA)`
+- **编码总则：所有进哈希/签名的字段一律使用「解码后的原始字节」，绝不使用 hex 文本**（hex 只是接口传参形式）。
+  nonce 早期在 transcript/KDF 里曾以 hex 文本的 ASCII 参与（32 字节），现已统一为解码后的 **16 原始字节**（破坏性变更）。
+- **ID 统一 32 字节零补齐**（右侧 0x00）：transcript、会话密钥 KDF、身份摘要 HA(算 λ)、SM2 签名 ZA **四处一致**，ENTL 恒为 `0x0100`(=256bit)。
+- 身份摘要 `HA = SM3(0x0100 ‖ ID32 ‖ a ‖ b ‖ Gx ‖ Gy ‖ Ppub.x ‖ Ppub.y)`；`λ = SM3(WA.x ‖ WA.y ‖ HA)`
 - 完整密钥 `dA = (tA + ua) mod n`，`PA = WA + λ·Ppub`（验证方重构，无需预存公钥）
 - SM2 签名 transcript（**全定长字段直拼、无长度前缀**）：发起方（桩）签 `R_B ‖ ID_B ‖ W_B ‖ nonce`，响应方（云）签 `R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce`；ID 定长 32 字节右侧 0x00 补齐；签名线上格式为裸 `r‖s`（64 字节）
 - 会话密钥 `SK = SM3(x(ECDH) ‖ RA ‖ RB ‖ ID_A ‖ ID_B ‖ nonce)`
