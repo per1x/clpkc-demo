@@ -186,7 +186,7 @@ public final class ClpkcCrypto {
             SM2Signer signer = new SM2Signer(PlainDSAEncoding.INSTANCE);  // 裸 r‖s 64 字节
             signer.init(true, new ParametersWithID(new ParametersWithRandom(
                 new ECPrivateKeyParameters(fullPrivate, EcCurve.DOMAIN), random),
-                id.getBytes(StandardCharsets.UTF_8)));
+                fixedId(id)));  // ZA 用户标识统一 32 字节零补齐（ENTL=0x0100）
             signer.update(msg, 0, msg.length);
             return Hex.encode(signer.generateSignature());
         } catch (Exception e) {
@@ -199,7 +199,7 @@ public final class ClpkcCrypto {
             ECPoint pa = curve.pointFromHex(fullPublicHex);
             SM2Signer signer = new SM2Signer(PlainDSAEncoding.INSTANCE);  // 裸 r‖s 64 字节
             signer.init(false, new ParametersWithID(
-                new ECPublicKeyParameters(pa, EcCurve.DOMAIN), id.getBytes(StandardCharsets.UTF_8)));
+                new ECPublicKeyParameters(pa, EcCurve.DOMAIN), fixedId(id)));  // ZA 32 字节零补齐（ENTL=0x0100）
             signer.update(msg, 0, msg.length);
             return signer.verifySignature(Hex.decode(sigHex));
         } catch (RuntimeException e) {
@@ -235,8 +235,8 @@ public final class ClpkcCrypto {
     // ------------------------------------------------------------------
 
     private byte[] computeHA(String id, String masterPublicHex) {
-        byte[] idBytes = id.getBytes(StandardCharsets.UTF_8);
-        int lenBits = idBytes.length * 8;
+        byte[] idBytes = fixedId(id);  // ID 统一 32 字节零补齐 → ENTL 恒为 256 bit（0x0100）
+        int lenBits = idBytes.length * 8;  // = 256
         byte[] len2B = {(byte) ((lenBits >>> 8) & 0xff), (byte) (lenBits & 0xff)};
         byte[] ppub = Hex.decode(masterPublicHex);
         byte[] px = Arrays.copyOfRange(ppub, 0, 32);

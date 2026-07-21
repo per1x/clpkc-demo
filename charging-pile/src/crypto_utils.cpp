@@ -240,7 +240,8 @@ std::string CryptoUtils::sm2_sign(const std::vector<unsigned char>& msg, const s
         if (pctx) EVP_PKEY_CTX_free(pctx);
         throw std::runtime_error("SM2 sign ctx 创建失败");
     }
-    EVP_PKEY_CTX_set1_id(pctx, id.data(), static_cast<int>(id.size()));
+    auto id32 = id_fixed(id);  // ZA 用户标识统一 32 字节零补齐（ENTL=0x0100）
+    EVP_PKEY_CTX_set1_id(pctx, id32.data(), static_cast<int>(id32.size()));
     EVP_MD_CTX_set_pkey_ctx(mctx, pctx);
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> mctx_guard(mctx, EVP_MD_CTX_free);
 
@@ -286,7 +287,8 @@ bool CryptoUtils::sm2_verify(const std::vector<unsigned char>& msg, const std::s
             if (pctx) EVP_PKEY_CTX_free(pctx);
             return false;
         }
-        EVP_PKEY_CTX_set1_id(pctx, id.data(), static_cast<int>(id.size()));
+        auto id32 = id_fixed(id);  // ZA 用户标识统一 32 字节零补齐（ENTL=0x0100）
+        EVP_PKEY_CTX_set1_id(pctx, id32.data(), static_cast<int>(id32.size()));
         EVP_MD_CTX_set_pkey_ctx(mctx, pctx);
         std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> mctx_guard(mctx, EVP_MD_CTX_free);
 
@@ -355,8 +357,9 @@ std::string CryptoUtils::sm3_hex_of_ascii(const std::string& ascii) const {
 // HA / λ
 // ---------------------------------------------------------------------------
 std::vector<unsigned char> CryptoUtils::compute_ha(const std::string& id, const std::string& master_public_hex) const {
-    std::vector<unsigned char> idb(id.begin(), id.end());
-    unsigned int lenBits = static_cast<unsigned int>(idb.size()) * 8;
+    // ID 统一 32 字节零补齐 → ENTL 恒为 256 bit（0x0100）。与 transcript/KDF/ZA 一致。
+    std::vector<unsigned char> idb = id_fixed(id);
+    unsigned int lenBits = static_cast<unsigned int>(idb.size()) * 8;  // = 256
     std::vector<unsigned char> input = {static_cast<unsigned char>((lenBits >> 8) & 0xff),
                                         static_cast<unsigned char>(lenBits & 0xff)};
     input.insert(input.end(), idb.begin(), idb.end());
