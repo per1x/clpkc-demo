@@ -25,6 +25,7 @@ add_executable(charging_pile
     src/main.cpp
     src/crypto_utils.cpp
     src/net_client.cpp
+    src/frame.cpp
     src/config.cpp
     src/keystore.cpp
 )

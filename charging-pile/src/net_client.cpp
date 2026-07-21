@@ -127,6 +127,46 @@ std::string NetClient::read_line() {
     }
 }
 
+void NetClient::write_bytes(const std::vector<unsigned char>& data) {
+    std::size_t sent = 0;
+    while (sent < data.size()) {
+        ssize_t n = ::send(fd_, data.data() + sent, data.size() - sent, 0);
+        if (n <= 0) {
+            throw std::runtime_error("发送失败: " + std::string(std::strerror(errno)));
+        }
+        sent += static_cast<std::size_t>(n);
+    }
+}
+
+std::vector<unsigned char> NetClient::read_exact(std::size_t len) {
+    std::vector<unsigned char> out;
+    out.reserve(len);
+    // 先消费行缓冲里可能已收到的字节（与二进制帧不混用，通常为空，稳妥起见处理）
+    while (!buffer_.empty() && out.size() < len) {
+        out.push_back(static_cast<unsigned char>(buffer_.front()));
+        buffer_.erase(0, 1);
+    }
+    while (out.size() < len) {
+        char chunk[4096];
+        std::size_t want = len - out.size();
+        if (want > sizeof(chunk)) {
+            want = sizeof(chunk);
+        }
+        ssize_t n = ::recv(fd_, chunk, want, 0);
+        if (n == 0) {
+            throw std::runtime_error("连接被对端关闭");
+        }
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                throw std::runtime_error("读超时");
+            }
+            throw std::runtime_error("接收失败: " + std::string(std::strerror(errno)));
+        }
+        out.insert(out.end(), chunk, chunk + n);
+    }
+    return out;
+}
+
 void NetClient::close() {
     if (fd_ >= 0) {
         ::close(fd_);
