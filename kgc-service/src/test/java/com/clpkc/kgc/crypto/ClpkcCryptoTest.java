@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 import org.junit.jupiter.api.Test;
 
@@ -36,7 +37,9 @@ class ClpkcCryptoTest {
         assertEquals(crypto.curve().xyHex(crypto.curve().basePointMul(pilePriv)), pilePub);
         assertEquals(crypto.curve().xyHex(crypto.curve().basePointMul(cloudPriv)), cloudPub);
 
-        String nonce = Hex.encode(EcCurve.sm3("session-nonce".getBytes(StandardCharsets.UTF_8)));
+        // nonce 固定 16 字节（协议规定）；原先误用 SM3 输出(32 字节)，新增的长度校验已将其暴露
+        String nonce = Hex.encode(Arrays.copyOf(
+            EcCurve.sm3("session-nonce".getBytes(StandardCharsets.UTF_8)), 16));
 
         // 桩=发起方B(R_B)、云=响应方A(R_A)
         ClpkcCrypto.KeyMaterial ephPile = crypto.generateStaticKey();   // R_B

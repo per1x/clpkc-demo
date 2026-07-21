@@ -5,8 +5,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import org.bouncycastle.crypto.digests.SM3Digest;
 import org.bouncycastle.crypto.engines.SM2Engine;
@@ -29,7 +27,6 @@ import org.bouncycastle.math.ec.ECPoint;
  */
 public final class ClpkcCrypto {
 
-    private static final Logger log = LoggerFactory.getLogger(ClpkcCrypto.class);
     /** transcript / KDF 拼接里 ID 的定长字节数（右侧 0x00 补齐）。 */
     private static final int ID_FIXED_LEN = 32;
 
@@ -169,7 +166,11 @@ public final class ClpkcCrypto {
     }
 
     public boolean verifyInitiator(byte[] rB, String idB, byte[] wB, String nonce, String sigHex, String fullPublicHex) {
-        return sm2Verify(transcriptInitiator(rB, idB, wB, nonce), idB, sigHex, fullPublicHex);
+        try {
+            return sm2Verify(transcriptInitiator(rB, idB, wB, nonce), idB, sigHex, fullPublicHex);
+        } catch (RuntimeException e) {
+            return false;  // 验签语义：入参非法与签名不匹配一律返回 false
+        }
     }
 
     /** 响应方（云）签名：transcript = R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce（已收到 R_B，绑双方临时公钥）。 */
@@ -178,7 +179,11 @@ public final class ClpkcCrypto {
     }
 
     public boolean verifyResponder(byte[] rA, byte[] rB, String idA, byte[] wA, String nonce, String sigHex, String fullPublicHex) {
-        return sm2Verify(transcriptResponder(rA, rB, idA, wA, nonce), idA, sigHex, fullPublicHex);
+        try {
+            return sm2Verify(transcriptResponder(rA, rB, idA, wA, nonce), idA, sigHex, fullPublicHex);
+        } catch (RuntimeException e) {
+            return false;  // 验签语义：入参非法与签名不匹配一律返回 false
+        }
     }
 
     private String sm2Sign(byte[] msg, String id, BigInteger fullPrivate) {
@@ -216,8 +221,9 @@ public final class ClpkcCrypto {
                                    byte[] ra, byte[] rb, String idA, String idB, String nonce) {
         ECPoint shared = curve.multiply(curve.pointFromHex(peerPointHex), ephemeralScalar);
         byte[] sharedX = curve.toFixed(shared.normalize().getAffineXCoord().toBigInteger(), EcCurve.SCALAR_LEN);
-        byte[] digest = EcCurve.sm3(concat(sharedX, ra, rb,
-            fixedId(idA), fixedId(idB), Hex.decode(nonce)));
+        byte[] digest = EcCurve.sm3(concat(requireLen(sharedX, 32, "Sx"),
+            requireLen(ra, 64, "R_A"), requireLen(rb, 64, "R_B"),
+            fixedId(idA), fixedId(idB), decodeNonce(nonce)));
         return Hex.encode(digest);
     }
 
@@ -253,24 +259,40 @@ public final class ClpkcCrypto {
 
     /** 发起方 transcript：R_B ‖ ID_B ‖ W_B ‖ nonce（全定长字段直拼，无长度前缀）。 */
     private byte[] transcriptInitiator(byte[] rB, String idB, byte[] wB, String nonce) {
-        return concat(rB, fixedId(idB), wB, Hex.decode(nonce));
+        return concat(requireLen(rB, 64, "R_B"), fixedId(idB),
+            requireLen(wB, 64, "W_B"), decodeNonce(nonce));
     }
 
     /** 响应方 transcript：R_A ‖ R_B ‖ ID_A ‖ W_A ‖ nonce（全定长字段直拼，无长度前缀）。 */
     private byte[] transcriptResponder(byte[] rA, byte[] rB, String idA, byte[] wA, String nonce) {
-        return concat(rA, rB, fixedId(idA), wA, Hex.decode(nonce));
+        return concat(requireLen(rA, 64, "R_A"), requireLen(rB, 64, "R_B"), fixedId(idA),
+            requireLen(wA, 64, "W_A"), decodeNonce(nonce));
     }
 
     /** ID 定长编码：UTF-8 取 {@value #ID_FIXED_LEN} 字节，右侧 0x00 补齐；超长截断并告警。 */
     private byte[] fixedId(String id) {
         byte[] raw = id.getBytes(StandardCharsets.UTF_8);
-        byte[] out = new byte[ID_FIXED_LEN];
-        int n = Math.min(raw.length, ID_FIXED_LEN);
         if (raw.length > ID_FIXED_LEN) {
-            log.warn("ID 超过 {} 字节，已截断用于 transcript/KDF: {}", ID_FIXED_LEN, id);
+            throw new IllegalArgumentException(
+                "ID 超过 " + ID_FIXED_LEN + " 字节上限，实际 " + raw.length + " 字节: " + id);
         }
-        System.arraycopy(raw, 0, out, 0, n);
+        byte[] out = new byte[ID_FIXED_LEN];
+        System.arraycopy(raw, 0, out, 0, raw.length);
         return out;
+    }
+
+    /** 定长校验：长度不符立即报错，避免静默算出与对端不同的结果。 */
+    private static byte[] requireLen(byte[] v, int want, String name) {
+        if (v == null || v.length != want) {
+            throw new IllegalArgumentException(
+                name + " 必须为 " + want + " 字节，实际 " + (v == null ? 0 : v.length) + " 字节");
+        }
+        return v;
+    }
+
+    /** nonce：hex 解码为 16 原始字节（长度不符报错）。 */
+    private static byte[] decodeNonce(String nonceHex) {
+        return requireLen(Hex.decode(nonceHex), 16, "nonce");
     }
 
     private static byte[] concat(byte[]... parts) {

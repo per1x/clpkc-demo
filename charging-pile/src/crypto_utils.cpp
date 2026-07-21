@@ -139,12 +139,25 @@ std::string CryptoUtils::reconstruct_full_public(const std::string& id, const st
 // ---------------------------------------------------------------------------
 std::string CryptoUtils::sm2_decrypt_c1c3c2(const std::string& cipher_hex, const std::string& secret_hex) {
     auto blob = hex_to_bytes(cipher_hex);
-    if (blob.size() < 65 + 32) {
-        throw std::runtime_error("SM2 密文长度非法");
+    if (blob.empty()) {
+        throw std::runtime_error("SM2 密文为空");
     }
-    std::vector<unsigned char> c1(blob.begin(), blob.begin() + 65);
-    std::vector<unsigned char> c3(blob.begin() + 65, blob.begin() + 97);
-    std::vector<unsigned char> c2(blob.begin() + 97, blob.end());
+    // C1 长度由首字节的点格式决定：04=非压缩(65)，02/03=压缩(33)。不做静默按 65 切分。
+    std::size_t c1_len;
+    switch (blob[0]) {
+        case 0x04: c1_len = 65; break;
+        case 0x02:
+        case 0x03: c1_len = 33; break;
+        default:
+            throw std::runtime_error("SM2 密文 C1 点格式非法：首字节应为 04/02/03，实际 0x"
+                                     + bytes_to_hex({blob[0]}));
+    }
+    if (blob.size() < c1_len + 32) {
+        throw std::runtime_error("SM2 密文长度非法：不足 C1(" + std::to_string(c1_len) + ")+C3(32)");
+    }
+    std::vector<unsigned char> c1(blob.begin(), blob.begin() + c1_len);
+    std::vector<unsigned char> c3(blob.begin() + c1_len, blob.begin() + c1_len + 32);
+    std::vector<unsigned char> c2(blob.begin() + c1_len + 32, blob.end());
 
     PointPtr c1p(EC_POINT_new(group_), EC_POINT_free);
     if (!EC_POINT_oct2point(group_, c1p.get(), c1.data(), c1.size(), ctx_)
@@ -200,15 +213,15 @@ std::vector<unsigned char> CryptoUtils::build_transcript(const std::vector<std::
     return out;
 }
 
-// ID 定长编码：取 32 字节，右侧 0x00 补齐；超长截断并告警
+// ID 定长编码：32 字节，右侧 0x00 补齐；**超长直接报错**（不再截断，避免不同 ID 截断后碰撞）
 std::vector<unsigned char> CryptoUtils::id_fixed(const std::string& id) {
     const std::size_t ID_FIXED_LEN = 32;
-    std::vector<unsigned char> out(ID_FIXED_LEN, 0x00);
-    std::size_t n = id.size() < ID_FIXED_LEN ? id.size() : ID_FIXED_LEN;
     if (id.size() > ID_FIXED_LEN) {
-        LOG_WARN("ID 超过 32 字节，已截断用于 transcript/KDF: " + id);
+        throw std::runtime_error("ID 超过 32 字节上限，实际 " + std::to_string(id.size())
+                                 + " 字节: " + id);
     }
-    std::memcpy(out.data(), id.data(), n);
+    std::vector<unsigned char> out(ID_FIXED_LEN, 0x00);
+    std::memcpy(out.data(), id.data(), id.size());
     return out;
 }
 
@@ -217,10 +230,10 @@ std::string CryptoUtils::sign_initiator(const std::string& r_pile_hex, const std
                                         const std::string& w_hex, const std::string& nonce,
                                         const std::string& full_private_hex) {
     auto msg = build_transcript({
-        hex_to_bytes(r_pile_hex),
+        hex_fixed(r_pile_hex, 64, "R_B"),
         id_fixed(id),
-        hex_to_bytes(w_hex),
-        hex_to_bytes(nonce)});
+        hex_fixed(w_hex, 64, "W_B"),
+        hex_fixed(nonce, 16, "nonce")});
     return sm2_sign(msg, id, full_private_hex);
 }
 
@@ -263,13 +276,17 @@ std::string CryptoUtils::sm2_sign(const std::vector<unsigned char>& msg, const s
 bool CryptoUtils::verify_responder(const std::string& r_a_hex, const std::string& r_b_hex,
                                    const std::string& id, const std::string& w_hex, const std::string& nonce,
                                    const std::string& sig_raw_hex, const std::string& full_public_hex) {
-    auto msg = build_transcript({
-        hex_to_bytes(r_a_hex),
-        hex_to_bytes(r_b_hex),
-        id_fixed(id),
-        hex_to_bytes(w_hex),
-        hex_to_bytes(nonce)});
-    return sm2_verify(msg, id, sig_raw_hex, full_public_hex);
+    try {
+        auto msg = build_transcript({
+            hex_fixed(r_a_hex, 64, "R_A"),
+            hex_fixed(r_b_hex, 64, "R_B"),
+            id_fixed(id),
+            hex_fixed(w_hex, 64, "W_A"),
+            hex_fixed(nonce, 16, "nonce")});
+        return sm2_verify(msg, id, sig_raw_hex, full_public_hex);
+    } catch (const std::exception&) {
+        return false;  // 验签语义：入参非法与签名不匹配一律返回 false，不抛异常
+    }
 }
 
 bool CryptoUtils::sm2_verify(const std::vector<unsigned char>& msg, const std::string& id,
@@ -320,12 +337,12 @@ std::string CryptoUtils::derive_session_key(const std::string& eph_secret_hex, c
 
     // SK = SM3( Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce )，全定长字段直拼、单次 SM3
     std::vector<unsigned char> z = build_transcript({
-        coord_bytes(sx.get()),
-        hex_to_bytes(ra_hex),
-        hex_to_bytes(rb_hex),
+        coord_bytes(sx.get()),  // Sx 恒 32 字节（BN_bn2binpad 定长零填充）
+        hex_fixed(ra_hex, 64, "R_A"),
+        hex_fixed(rb_hex, 64, "R_B"),
         id_fixed(ida),
         id_fixed(idb),
-        hex_to_bytes(nonce)});
+        hex_fixed(nonce, 16, "nonce")});
     return bytes_to_hex(sm3(z));
 }
 
@@ -450,9 +467,22 @@ std::string CryptoUtils::bn_to_fixed_hex(const BIGNUM* bn) const {
 
 BIGNUM* CryptoUtils::hex_to_bn(const std::string& hex) const {
     BIGNUM* bn = nullptr;
-    BN_hex2bn(&bn, hex.c_str());
+    if (BN_hex2bn(&bn, hex.c_str()) == 0 || bn == nullptr) {
+        if (bn) BN_free(bn);
+        throw std::runtime_error("标量 hex 解析失败");
+    }
     return bn;
 }
+
+namespace {
+// 显式 hex 解析：非法字符一律抛 std::runtime_error（不再用 std::stoul，避免抛 invalid_argument）
+int hex_val_of(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    throw std::runtime_error(std::string("非法 hex 字符: '") + c + "'");
+}
+}  // namespace
 
 std::vector<unsigned char> CryptoUtils::hex_to_bytes(const std::string& hex) const {
     if (hex.size() % 2 != 0) {
@@ -461,9 +491,20 @@ std::vector<unsigned char> CryptoUtils::hex_to_bytes(const std::string& hex) con
     std::vector<unsigned char> out;
     out.reserve(hex.size() / 2);
     for (std::size_t i = 0; i < hex.size(); i += 2) {
-        out.push_back(static_cast<unsigned char>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+        out.push_back(static_cast<unsigned char>((hex_val_of(hex[i]) << 4) | hex_val_of(hex[i + 1])));
     }
     return out;
+}
+
+// 定长解码：字节数不符立即报错，避免静默截断/补齐导致两端悄悄算出不同结果
+std::vector<unsigned char> CryptoUtils::hex_fixed(const std::string& hex, std::size_t want,
+                                                  const char* name) const {
+    std::vector<unsigned char> b = hex_to_bytes(hex);
+    if (b.size() != want) {
+        throw std::runtime_error(std::string(name) + " 必须为 " + std::to_string(want)
+                                 + " 字节，实际 " + std::to_string(b.size()) + " 字节");
+    }
+    return b;
 }
 
 std::string CryptoUtils::bytes_to_hex(const std::vector<unsigned char>& data) const {

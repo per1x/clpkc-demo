@@ -90,6 +90,9 @@ private:
     std::string bn_to_fixed_hex(const BIGNUM* bn) const;
     BIGNUM* hex_to_bn(const std::string& hex) const;
     std::vector<unsigned char> hex_to_bytes(const std::string& hex) const;
+    // 定长解码：字节数不符立即报错（transcript/KDF 入参校验用）
+    std::vector<unsigned char> hex_fixed(const std::string& hex, std::size_t want,
+                                         const char* name) const;
     std::string bytes_to_hex(const std::vector<unsigned char>& data) const;
     std::vector<unsigned char> sm3(const std::vector<unsigned char>& data) const;
     BIGNUM* random_scalar() const;

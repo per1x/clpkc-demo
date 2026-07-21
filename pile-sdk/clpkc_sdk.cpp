@@ -574,7 +574,7 @@ std::string session_key_to_sm4(const std::string& sk32_hex) {
 
 std::string make_id_from_ascii(const std::string& ascii) {
     if (ascii.size() > ID_LEN) {
-        throw Error("ASCII 主机编号超过 32 字节");
+        throw Error("ID 超过 32 字节上限，实际 " + std::to_string(ascii.size()) + " 字节");
     }
     Bytes out(ID_LEN, 0x00);
     std::memcpy(out.data(), ascii.data(), ascii.size());
