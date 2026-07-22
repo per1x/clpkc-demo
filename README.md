@@ -21,7 +21,8 @@
 | `cloud-service/` | 云平台（Spring Boot 3 / JDK 17，**独立 Maven 工程**）。密码学在自己的 `com.clpkc.cloud.crypto` 包内（与 KGC 各一份）。 |
 | `charging-pile/` | 充电桩 C++ 客户端（CMake / OpenSSL）。 |
 | `scripts/` | 构建与联调脚本。 |
-| `pile-sdk/` | 桩端（主机端）密码学 SDK（C++17 / OpenSSL），含 KAT 测试向量。 |
+| `pile-sdk/` | 桩端（主机端）密码学 SDK（C++17 / OpenSSL），含 KAT 测试向量。**充电桩的密码学实现唯一来源**。 |
+| `docs/` | 对外文档：[`SPEC_FEEDBACK.md`](docs/SPEC_FEEDBACK.md) 为技术联络单附录 A.3 的修订建议清单。 |
 | `legacy-demo/` | 早期联调 Demo 存档，不参与构建。 |
 
 > 密码学库（`Hex`/`EcCurve`/`ClpkcCrypto`）**不做共享模块，各服务各自持有一份**；每个服务是独立工程，可单独 `mvn -f <service>/pom.xml package`。国密 SM2+SM3（BouncyCastle），隐式证书方案（`WA`/`λ`/`tA`、`dA=tA+ua`、`PA=WA+λ·Ppub`）。
