@@ -69,10 +69,10 @@ cd build && make test          # 等价：直接运行 ./clpkc_selftest
 
 ## 2. 测试向量
 
-### [KAT-1] `sm3_hex`
+### [KAT-1] `sm3_hex_of_ascii`
 
 ```
-输入  data_hex = 616263                       // 即 ASCII "abc"
+输入  ascii = "abc"
 期望  66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0
 ```
 该值同时是 GM/T 0004 标准给出的 `SM3("abc")` 向量，可与任意第三方 SM3 实现独立核对。
@@ -121,8 +121,8 @@ point_to_wire(R_B)           → R_B            (已是裸点，幂等)
 ### [KAT-6] `compose_full_private`
 
 ```
-输入  d_hex = ua_pile
-      t_hex = 上一步的 t
+输入  secret_hex            = ua_pile
+      encrypted_partial_hex = cipher_pile      // 内部解密后合成
 期望  SK_pile = 98f05f0517152b29e7d258b66f8a6b039c73e80a0b99d157b90e72f6c924bb04          // (d + t) mod n
 ```
 
@@ -178,10 +178,10 @@ verify_initiator(R_B, ID_B, W_pile, nonce, sig, PK_pile)              → true
 verify_initiator(R_B, ID_B, W_pile, nonce 末字节改 ff, sig, PK_pile)  → false
 ```
 
-### [KAT-12] `generate_keypair` / `random_bytes_hex`
+### [KAT-12] `generate_static_key` / `random_bytes_hex`
 
 ```
-generate_keypair()      → secret_hex 64 hex、public_hex 128 hex，两次调用结果不同
+generate_static_key()      → secret_hex 64 hex、public_hex 128 hex，两次调用结果不同
 random_bytes_hex(16)    → 32 hex，两次调用结果不同
 ```
 

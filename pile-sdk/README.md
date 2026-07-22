@@ -195,11 +195,11 @@ SK = SM3( Sx(32) ‖ R_A(64) ‖ R_B(64) ‖ ID_A(32) ‖ ID_B(32) ‖ nonce(16)
 ### 5.1 密钥与随机数
 
 ```cpp
-struct KeyPair {
+struct KeyMaterial {
     std::string secret_hex;  // 私钥 d：64 hex / 32 字节
     std::string public_hex;  // 公钥 x‖y：128 hex / 64 字节
 };
-KeyPair generate_keypair();
+KeyMaterial generate_static_key();
 ```
 生成一对 SM2 密钥，私钥取自 `[1, n-1]` 的密码学安全随机数，公钥 `= d·G`。
 长期密钥 `(d_B, U_B)` 与每次会话的临时密钥 `(b, R_B)` 都用此函数生成。
@@ -252,87 +252,92 @@ std::string sm2_decrypt(const std::string& d_hex, const std::string& cipher_hex)
 C3 校验不通过 → 抛 `clpkc::Error`。
 
 ```cpp
-std::string compose_full_private(const std::string& d_hex, const std::string& t_hex);
+std::string compose_full_private(const std::string& secret_hex,
+                                 const std::string& encrypted_partial_hex);
 ```
 | 参数 | 长度 | 说明 |
 |---|---|---|
-| `d_hex` | 64 hex / 32 字节 | 本机私钥 `u_B` |
-| `t_hex` | 64 hex / 32 字节 | 解密得到的部分私钥 `t` |
+| `secret_hex` | 64 hex / 32 字节 | 本机私钥 `u_B` |
+| `encrypted_partial_hex` | 258 hex / 129 字节 | KGC 下发的部分私钥**密文** |
 
-返回完整私钥 `SK = (d + t) mod n`，**64 hex / 32 字节**。
-**错误**：任一入参长度不符或 hex 非法抛 `clpkc::Error`。
+内部先用 `secret_hex` 对密文做 SM2 解密得到 `t`，再返回完整私钥
+`SK = (d + t) mod n`，**64 hex / 32 字节**。若只想单独解密不合成，用 `sm2_decrypt`。
+**错误**：长度不符、hex 非法、C1 格式非法、C3 校验不过 → 抛 `clpkc::Error`。
 
 ```cpp
-std::string reconstruct_full_public(const std::string& id_hex, const std::string& w_hex,
-                                    const std::string& ppub_hex);
+std::string reconstruct_full_public(const std::string& id_hex,
+                                    const std::string& claimed_public_hex,
+                                    const std::string& master_public_hex);
 ```
 | 参数 | 长度 | 说明 |
 |---|---|---|
 | `id_hex` | 64 hex / 32 字节 | 被重建方的 ID（见 §4.2） |
-| `w_hex` | 128 hex / 64 字节 | 被重建方的声明公钥 `W`，裸 `X‖Y` |
-| `ppub_hex` | 128 hex / 64 字节 | KGC 主公钥 `Ppub`，裸 `X‖Y` |
+| `claimed_public_hex` | 128 hex / 64 字节 | 被重建方的声明公钥 `W`，裸 `X‖Y` |
+| `master_public_hex` | 128 hex / 64 字节 | KGC 主公钥 `Ppub`，裸 `X‖Y` |
 
 按 §4.3 计算并返回完整公钥 `PK`，**128 hex / 64 字节**裸 `X‖Y`。
 **错误**：长度不符、hex 非法、点不在 SM2 曲线上 → 抛 `clpkc::Error`。
 
 ```cpp
-bool verify_keypair_consistency(const std::string& sk_hex, const std::string& w_hex,
-                                const std::string& ppub_hex, const std::string& id_hex);
+bool verify_keypair_consistency(const std::string& full_private_hex,
+                                const std::string& claimed_public_hex,
+                                const std::string& master_public_hex,
+                                const std::string& id_hex);
 ```
 | 参数 | 长度 | 说明 |
 |---|---|---|
-| `sk_hex` | 64 hex / 32 字节 | 完整私钥 |
-| `w_hex` | 128 hex / 64 字节 | 自己的声明公钥 `W` |
-| `ppub_hex` | 128 hex / 64 字节 | KGC 主公钥 `Ppub` |
+| `full_private_hex` | 64 hex / 32 字节 | 完整私钥 |
+| `claimed_public_hex` | 128 hex / 64 字节 | 自己的声明公钥 `W` |
+| `master_public_hex` | 128 hex / 64 字节 | KGC 主公钥 `Ppub` |
 | `id_hex` | 64 hex / 32 字节 | 自己的 ID |
 
 校验 `SK·G == W + λ·Ppub`。**开通流程落盘前应调用一次**，确认拿到的密钥材料自洽。
 **错误**：**不抛异常**。入参非法或不自洽一律返回 `false`。
 
-> 注意本函数的参数顺序是 `(sk, w, ppub, id)`，与 `reconstruct_full_public` 的
-> `(id, w, ppub)` 不同，勿混淆。
+> 注意本函数的参数顺序是 `(full_private, claimed_public, master_public, id)`，
+> 与 `reconstruct_full_public` 的 `(id, claimed_public, master_public)` 不同，勿混淆。
 
 ### 5.4 签名与验签
 
 ```cpp
-std::string sign_initiator(const std::string& rB_hex, const std::string& idB_hex,
-                           const std::string& wB_hex, const std::string& nonce_hex,
-                           const std::string& sk_hex);
+std::string sign_initiator(const std::string& r_pile_hex, const std::string& id,
+                           const std::string& w_hex, const std::string& nonce,
+                           const std::string& full_private_hex);
 ```
 | 参数 | 长度 | 说明 |
 |---|---|---|
-| `rB_hex` | 128 hex / 64 字节 | 自己的临时公钥 `R_B`，裸 `X‖Y` |
-| `idB_hex` | 64 hex / 32 字节 | 自己的 ID_B |
-| `wB_hex` | 128 hex / 64 字节 | 自己的声明公钥 `W_B`，裸 `X‖Y` |
-| `nonce_hex` | 32 hex / 16 字节 | 本次会话 nonce |
-| `sk_hex` | 64 hex / 32 字节 | 自己的完整私钥 |
+| `r_pile_hex` | 128 hex / 64 字节 | 自己的临时公钥 `R_B`，裸 `X‖Y` |
+| `id` | 64 hex / 32 字节 | 自己的 ID_B |
+| `w_hex` | 128 hex / 64 字节 | 自己的声明公钥 `W_B`，裸 `X‖Y` |
+| `nonce` | 32 hex / 16 字节 | 本次会话 nonce |
+| `full_private_hex` | 64 hex / 32 字节 | 自己的完整私钥 |
 
 对发起方 transcript（§4.5）签名，返回 **128 hex / 64 字节**裸 `r‖s`。
 **错误**：任一入参长度不符、hex 非法、点不在曲线上 → 抛 `clpkc::Error`。
 
 ```cpp
-bool verify_responder(const std::string& rA_hex, const std::string& rB_hex,
-                      const std::string& idA_hex, const std::string& wA_hex,
-                      const std::string& nonce_hex, const std::string& sig_raw_hex,
-                      const std::string& pk_hex);
+bool verify_responder(const std::string& r_a_hex, const std::string& r_b_hex,
+                      const std::string& id, const std::string& w_hex,
+                      const std::string& nonce, const std::string& sig_raw_hex,
+                      const std::string& full_public_hex);
 ```
 | 参数 | 长度 | 说明 |
 |---|---|---|
-| `rA_hex` | 128 hex / 64 字节 | 对端（云）临时公钥 `R_A` |
-| `rB_hex` | 128 hex / 64 字节 | 自己的临时公钥 `R_B` |
-| `idA_hex` | 64 hex / 32 字节 | 对端 ID_A |
-| `wA_hex` | 128 hex / 64 字节 | 对端声明公钥 `W_A` |
-| `nonce_hex` | 32 hex / 16 字节 | 本次会话 nonce |
+| `r_a_hex` | 128 hex / 64 字节 | 对端（云）临时公钥 `R_A` |
+| `r_b_hex` | 128 hex / 64 字节 | 自己的临时公钥 `R_B` |
+| `id` | 64 hex / 32 字节 | 对端 ID_A |
+| `w_hex` | 128 hex / 64 字节 | 对端声明公钥 `W_A` |
+| `nonce` | 32 hex / 16 字节 | 本次会话 nonce |
 | `sig_raw_hex` | 128 hex / 64 字节 | 对端签名，裸 `r‖s` |
-| `pk_hex` | 128 hex / 64 字节 | 对端完整公钥，由 `reconstruct_full_public` 得到 |
+| `full_public_hex` | 128 hex / 64 字节 | 对端完整公钥，由 `reconstruct_full_public` 得到 |
 
 校验响应方 transcript（§4.5）上的签名。
 **错误**：**不抛异常**。签名不匹配、入参长度不符、hex 非法、点非法一律返回 `false`。
 
 ```cpp
-bool verify_initiator(const std::string& rB_hex, const std::string& idB_hex,
-                      const std::string& wB_hex, const std::string& nonce_hex,
-                      const std::string& sig_raw_hex, const std::string& pk_hex);
+bool verify_initiator(const std::string& r_pile_hex, const std::string& id,
+                      const std::string& w_hex, const std::string& nonce,
+                      const std::string& sig_raw_hex, const std::string& full_public_hex);
 ```
 与 `sign_initiator` 配对的验签函数，参数含义同上，供集成方离线自检与联调定位使用。
 **错误**：同 `verify_responder`，不抛异常，一律返回 `bool`。
@@ -341,25 +346,25 @@ bool verify_initiator(const std::string& rB_hex, const std::string& idB_hex,
 
 ```cpp
 std::string derive_session_key(const std::string& eph_secret_hex, const std::string& peer_point_hex,
-                               const std::string& rA_hex, const std::string& rB_hex,
-                               const std::string& idA_hex, const std::string& idB_hex,
-                               const std::string& nonce_hex);
+                               const std::string& ra_hex, const std::string& rb_hex,
+                               const std::string& ida_hex, const std::string& idb_hex,
+                               const std::string& nonce);
 ```
 | 参数 | 长度 | 说明 |
 |---|---|---|
 | `eph_secret_hex` | 64 hex / 32 字节 | **自己的**临时私钥。主机端传 `b` |
 | `peer_point_hex` | 128 hex / 64 字节 | **对端的**临时公钥。主机端传 `R_A` |
-| `rA_hex` | 128 hex / 64 字节 | 云端临时公钥 `R_A`（参与拼接） |
-| `rB_hex` | 128 hex / 64 字节 | 桩端临时公钥 `R_B`（参与拼接） |
-| `idA_hex` | 64 hex / 32 字节 | 云端 ID_A |
-| `idB_hex` | 64 hex / 32 字节 | 桩端 ID_B |
-| `nonce_hex` | 32 hex / 16 字节 | 本次会话 nonce |
+| `ra_hex` | 128 hex / 64 字节 | 云端临时公钥 `R_A`（参与拼接） |
+| `rb_hex` | 128 hex / 64 字节 | 桩端临时公钥 `R_B`（参与拼接） |
+| `ida_hex` | 64 hex / 32 字节 | 云端 ID_A |
+| `idb_hex` | 64 hex / 32 字节 | 桩端 ID_B |
+| `nonce` | 32 hex / 16 字节 | 本次会话 nonce |
 
 按 §4.6 返回 **64 hex / 32 字节**会话密钥。
 
 > 前两个参数决定 ECDH 的计算，后五个参数决定拼接内容。主机端固定传
-> `eph_secret_hex = b`、`peer_point_hex = R_A`，而 `rA_hex`/`rB_hex` 无论哪一端都按
-> `R_A` 在前、`R_B` 在后传入；`idA_hex`/`idB_hex` 同理固定为云在前、桩在后。
+> `eph_secret_hex = b`、`peer_point_hex = R_A`，而 `ra_hex`/`rb_hex` 无论哪一端都按
+> `R_A` 在前、`R_B` 在后传入；`ida_hex`/`idb_hex` 同理固定为云在前、桩在后。
 
 **错误**：任一入参长度不符、hex 非法、点不在曲线上 → 抛 `clpkc::Error`。
 
@@ -406,10 +411,10 @@ std::string point_from_wire(const std::string& wire_hex);   // → 130 hex / 65 
 **错误**：长度不符或 hex 非法抛 `clpkc::Error`。
 
 ```cpp
-std::string sm3_hex(const std::string& data_hex);
+std::string sm3_hex_of_ascii(const std::string& ascii);
 ```
-`data_hex` 先 hex 解码再计算 SM3，返回 **64 hex / 32 字节**。
-**错误**：hex 非法抛 `clpkc::Error`。
+对 `ascii` 的**原始字节**计算 SM3（不做 hex 解码），返回 **64 hex / 32 字节**。
+例：`sm3_hex_of_ascii("abc")` 即标准向量 `SM3("abc")`。
 
 ---
 
@@ -452,15 +457,15 @@ try {
 ```
 开通（仅首次）：
   make_id_from_bcd(主机编号)                              → ID_B
-  generate_keypair()                                     → (d_B, U_B)；把 U_B 交给云端
+  generate_static_key()                                     → (d_B, U_B)；把 U_B 交给云端
   ——— 收到云端下发的 W、部分私钥密文、Ppub ———
-  sm2_decrypt(d_B, 密文)                                  → t
-  compose_full_private(d_B, t)                           → SK_B
+  compose_full_private(d_B, 密文)                         → SK_B（内部解密后合成）
+  （如需单独定位解密问题：sm2_decrypt(d_B, 密文) → t）
   verify_keypair_consistency(SK_B, W, Ppub, ID_B)        → 必须为 true，才可持久化
   持久化 d_B（或 SK_B）、W、Ppub、ID_B
 
 会话（每次）：
-  generate_keypair()                                     → (b, R_B) 临时密钥
+  generate_static_key()                                     → (b, R_B) 临时密钥
   random_bytes_hex(16)                                   → nonce
   sign_initiator(R_B, ID_B, W_B, nonce, SK_B)            → sig_B；把 R_B、nonce、sig_B 交给云端
   ——— 收到云端的 ID_A、W_A、R_A、sig_A ———

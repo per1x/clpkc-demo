@@ -40,7 +40,7 @@ public:
     explicit Error(const std::string& what) : std::runtime_error(what) {}
 };
 
-struct KeyPair {
+struct KeyMaterial {
     std::string secret_hex;  // 私钥标量 d，32 字节 / 64 hex
     std::string public_hex;  // 公钥点 x‖y，64 字节 / 128 hex
 };
@@ -51,7 +51,7 @@ struct KeyPair {
 
 // 生成 SM2 密钥对：私钥取 [1,n-1] 内的 CSPRNG 随机数，公钥 = d·G。
 // 长期密钥 (d_B, U_B) 与每次会话的临时密钥 (b, R_B) 都用此函数。失败抛 Error。
-KeyPair generate_keypair();
+KeyMaterial generate_static_key();
 
 // CSPRNG 随机字节 → 2*n_bytes 个 hex。n_bytes 必须 > 0，否则抛 Error。
 // nonce 与 random_A / random_B 均传 16。
@@ -79,22 +79,28 @@ bool hmac_sm3_verify(const std::string& key_hex, const std::string& data_hex,
 // 单独暴露，便于区分是解密失败还是合成失败。长度/格式非法、C3 校验不过均抛 Error。
 std::string sm2_decrypt(const std::string& d_hex, const std::string& cipher_hex);
 
-// 合成完整私钥 SK = (d + t) mod n。两个入参均为 64 hex/32 字节，返回 64 hex/32 字节。
-// 长度不符或 hex 非法抛 Error。
-std::string compose_full_private(const std::string& d_hex, const std::string& t_hex);
+// 合成完整私钥：先用 secret_hex 对 encrypted_partial_hex 做 SM2 解密得到 t，
+// 再计算 SK = (d + t) mod n。secret_hex 64 hex/32 字节，encrypted_partial_hex 258 hex/129 字节，
+// 返回 64 hex/32 字节。长度/格式非法或 C3 校验不过抛 Error。
+// （若只想单独解密不合成，用 sm2_decrypt。）
+std::string compose_full_private(const std::string& secret_hex,
+                                 const std::string& encrypted_partial_hex);
 
 // 重建完整公钥 PK = W + λ·Ppub，其中
 //   HA = SM3(0x0100 ‖ ID32 ‖ a ‖ b ‖ Gx ‖ Gy ‖ Ppub.x ‖ Ppub.y)
 //   λ  = SM3(W.x ‖ W.y ‖ HA)  （按大端无符号整数取用）
 // id_hex 为 32 字节 ID 的 hex。
-std::string reconstruct_full_public(const std::string& id_hex, const std::string& w_hex,
-                                    const std::string& ppub_hex);
+std::string reconstruct_full_public(const std::string& id_hex,
+                                    const std::string& claimed_public_hex,
+                                    const std::string& master_public_hex);
 
 // 自检：验证 SK·G == W + λ·Ppub。开通流程落盘前应调用一次，确认密钥材料自洽。
 // 入参：sk 64 hex，w / ppub 各 128 hex，id 64 hex。注意参数顺序与 reconstruct_full_public 不同。
 // 不抛异常：不自洽或入参非法一律返回 false。
-bool verify_keypair_consistency(const std::string& sk_hex, const std::string& w_hex,
-                                const std::string& ppub_hex, const std::string& id_hex);
+bool verify_keypair_consistency(const std::string& full_private_hex,
+                                const std::string& claimed_public_hex,
+                                const std::string& master_public_hex,
+                                const std::string& id_hex);
 
 // ---------------------------------------------------------------------------
 // 4. 第二阶段：SM2 签名 / 验签（ZA 用 32 字节 ID，ENTL=0x0100）
@@ -104,24 +110,24 @@ bool verify_keypair_consistency(const std::string& sk_hex, const std::string& w_
 // 各字段为原始字节、顺序直拼、无长度前缀。入参 rB/wB 各 128 hex，idB 64 hex，
 // nonce 32 hex，sk 64 hex。返回 128 hex/64 字节裸 r‖s。
 // SM2 签名含随机数 k，相同输入每次输出不同，判定以验签为准。入参非法抛 Error。
-std::string sign_initiator(const std::string& rB_hex, const std::string& idB_hex,
-                           const std::string& wB_hex, const std::string& nonce_hex,
-                           const std::string& sk_hex);
+std::string sign_initiator(const std::string& r_pile_hex, const std::string& id,
+                           const std::string& w_hex, const std::string& nonce,
+                           const std::string& full_private_hex);
 
 // 验响应方(云)签名。transcript = R_A(64) ‖ R_B(64) ‖ ID_A(32) ‖ W_A(64) ‖ nonce(16)，共 240 字节。
 // sig_raw_hex 为 128 hex/64 字节裸 r‖s；pk_hex 为云端完整公钥（由 reconstruct_full_public 得到）。
 // 不抛异常：验签不过或入参非法一律返回 false。
-bool verify_responder(const std::string& rA_hex, const std::string& rB_hex,
-                      const std::string& idA_hex, const std::string& wA_hex,
-                      const std::string& nonce_hex, const std::string& sig_raw_hex,
-                      const std::string& pk_hex);
+bool verify_responder(const std::string& r_a_hex, const std::string& r_b_hex,
+                      const std::string& id, const std::string& w_hex,
+                      const std::string& nonce, const std::string& sig_raw_hex,
+                      const std::string& full_public_hex);
 
 // 验发起方签名 —— 与 sign_initiator 配对，供集成方离线自检与联调定位。
 // 参数含义同 sign_initiator，另加 sig_raw_hex(128 hex) 与 pk_hex(128 hex)。
 // 不抛异常：验签不过或入参非法一律返回 false。
-bool verify_initiator(const std::string& rB_hex, const std::string& idB_hex,
-                      const std::string& wB_hex, const std::string& nonce_hex,
-                      const std::string& sig_raw_hex, const std::string& pk_hex);
+bool verify_initiator(const std::string& r_pile_hex, const std::string& id,
+                      const std::string& w_hex, const std::string& nonce,
+                      const std::string& sig_raw_hex, const std::string& full_public_hex);
 
 // ---------------------------------------------------------------------------
 // 5. 会话密钥
@@ -132,9 +138,9 @@ bool verify_initiator(const std::string& rB_hex, const std::string& idB_hex,
 // 桩端固定传 eph_secret=b(自己的临时私钥)、peer_point=R_A(云临时公钥)；
 // 而 rA/rB 与 idA/idB 无论哪一端都按「云在前、桩在后」传入。入参非法抛 Error。
 std::string derive_session_key(const std::string& eph_secret_hex, const std::string& peer_point_hex,
-                               const std::string& rA_hex, const std::string& rB_hex,
-                               const std::string& idA_hex, const std::string& idB_hex,
-                               const std::string& nonce_hex);
+                               const std::string& ra_hex, const std::string& rb_hex,
+                               const std::string& ida_hex, const std::string& idb_hex,
+                               const std::string& nonce);
 
 // 会话密钥 → SM4 密钥：取 SK 的前 16 字节。入参 64 hex/32 字节，返回 32 hex/16 字节。
 // 长度不符抛 Error。
@@ -162,7 +168,7 @@ std::string make_id_from_bcd(const std::string& host_no_decimal);
 std::string point_to_wire(const std::string& point_hex);
 std::string point_from_wire(const std::string& wire_hex);
 
-// SM3 摘要：data_hex 先 hex 解码再计算，返回 64 hex/32 字节。hex 非法抛 Error。
-std::string sm3_hex(const std::string& data_hex);
+// SM3 摘要：对传入字符串的**原始字节**做 SM3（不做 hex 解码），返回 64 hex/32 字节。
+std::string sm3_hex_of_ascii(const std::string& ascii);
 
 }  // namespace clpkc

@@ -351,7 +351,7 @@ bool sm2_verify(const Bytes& msg, const Bytes& id32, const std::string& sig_raw_
 // 1. 密钥与随机数
 // ===========================================================================
 
-KeyPair generate_keypair() {
+KeyMaterial generate_static_key() {
     Curve c;
     BnPtr x(BN_new(), BN_free);
     do {
@@ -472,24 +472,28 @@ std::string sm2_decrypt(const std::string& d_hex, const std::string& cipher_hex)
     return bytes_to_hex(m);
 }
 
-std::string compose_full_private(const std::string& d_hex, const std::string& t_hex) {
+std::string compose_full_private(const std::string& secret_hex,
+                                 const std::string& encrypted_partial_hex) {
     Curve c;
-    hex_fixed(d_hex, SCALAR_LEN, "d");
-    hex_fixed(t_hex, SCALAR_LEN, "t");
-    BnPtr d(hex_to_bn(d_hex), BN_free);
+    hex_fixed(secret_hex, SCALAR_LEN, "私钥 d");
+    // 先用本机私钥解密出部分私钥 t，再合成
+    std::string t_hex = sm2_decrypt(secret_hex, encrypted_partial_hex);
+    hex_fixed(t_hex, SCALAR_LEN, "部分私钥 t");
+    BnPtr d(hex_to_bn(secret_hex), BN_free);
     BnPtr t(hex_to_bn(t_hex), BN_free);
     BnPtr out(BN_new(), BN_free);
     BN_mod_add(out.get(), t.get(), d.get(), c.order, c.ctx);
     return bn_to_fixed_hex(out.get());
 }
 
-std::string reconstruct_full_public(const std::string& id_hex, const std::string& w_hex,
-                                    const std::string& ppub_hex) {
+std::string reconstruct_full_public(const std::string& id_hex,
+                                    const std::string& claimed_public_hex,
+                                    const std::string& master_public_hex) {
     Curve c;
     Bytes id32 = hex_fixed(id_hex, ID_LEN, "ID");
-    PointPtr w(point_from_xy_hex(c, w_hex), EC_POINT_free);
-    PointPtr ppub(point_from_xy_hex(c, ppub_hex), EC_POINT_free);
-    Bytes ha = compute_ha(c, id32, ppub_hex);
+    PointPtr w(point_from_xy_hex(c, claimed_public_hex), EC_POINT_free);
+    PointPtr ppub(point_from_xy_hex(c, master_public_hex), EC_POINT_free);
+    Bytes ha = compute_ha(c, id32, master_public_hex);
     BnPtr lambda(compute_lambda(c, w.get(), ha), BN_free);
     PointPtr tmp(EC_POINT_new(c.group), EC_POINT_free);
     EC_POINT_mul(c.group, tmp.get(), nullptr, ppub.get(), lambda.get(), c.ctx);  // λ·Ppub
@@ -498,16 +502,18 @@ std::string reconstruct_full_public(const std::string& id_hex, const std::string
     return point_to_xy_hex(c, pk.get());
 }
 
-bool verify_keypair_consistency(const std::string& sk_hex, const std::string& w_hex,
-                                const std::string& ppub_hex, const std::string& id_hex) {
+bool verify_keypair_consistency(const std::string& full_private_hex,
+                                const std::string& claimed_public_hex,
+                                const std::string& master_public_hex,
+                                const std::string& id_hex) {
     try {
         Curve c;
-        hex_fixed(sk_hex, SCALAR_LEN, "SK");
-        BnPtr sk(hex_to_bn(sk_hex), BN_free);
+        hex_fixed(full_private_hex, SCALAR_LEN, "SK");
+        BnPtr sk(hex_to_bn(full_private_hex), BN_free);
         PointPtr lhs(EC_POINT_new(c.group), EC_POINT_free);
         EC_POINT_mul(c.group, lhs.get(), sk.get(), nullptr, nullptr, c.ctx);  // SK·G
         std::string lhs_hex = point_to_xy_hex(c, lhs.get());
-        std::string rhs_hex = reconstruct_full_public(id_hex, w_hex, ppub_hex);
+        std::string rhs_hex = reconstruct_full_public(id_hex, claimed_public_hex, master_public_hex);
         return lhs_hex == rhs_hex;
     } catch (const std::exception&) {
         return false;
@@ -518,37 +524,37 @@ bool verify_keypair_consistency(const std::string& sk_hex, const std::string& w_
 // 4. 签名 / 验签
 // ===========================================================================
 
-std::string sign_initiator(const std::string& rB_hex, const std::string& idB_hex,
-                           const std::string& wB_hex, const std::string& nonce_hex,
-                           const std::string& sk_hex) {
-    Bytes id32 = hex_fixed(idB_hex, ID_LEN, "ID_B");
-    Bytes msg = concat({hex_fixed(rB_hex, POINT_LEN, "R_B"), id32,
-                        hex_fixed(wB_hex, POINT_LEN, "W_B"), nonce_bytes(nonce_hex)});
-    return sm2_sign(msg, id32, sk_hex);
+std::string sign_initiator(const std::string& r_pile_hex, const std::string& id,
+                           const std::string& w_hex, const std::string& nonce,
+                           const std::string& full_private_hex) {
+    Bytes id32 = hex_fixed(id, ID_LEN, "ID_B");
+    Bytes msg = concat({hex_fixed(r_pile_hex, POINT_LEN, "R_B"), id32,
+                        hex_fixed(w_hex, POINT_LEN, "W_B"), nonce_bytes(nonce)});
+    return sm2_sign(msg, id32, full_private_hex);
 }
 
-bool verify_initiator(const std::string& rB_hex, const std::string& idB_hex,
-                      const std::string& wB_hex, const std::string& nonce_hex,
-                      const std::string& sig_raw_hex, const std::string& pk_hex) {
+bool verify_initiator(const std::string& r_pile_hex, const std::string& id,
+                      const std::string& w_hex, const std::string& nonce,
+                      const std::string& sig_raw_hex, const std::string& full_public_hex) {
     try {
-        Bytes id32 = hex_fixed(idB_hex, ID_LEN, "ID_B");
-        Bytes msg = concat({hex_fixed(rB_hex, POINT_LEN, "R_B"), id32,
-                            hex_fixed(wB_hex, POINT_LEN, "W_B"), nonce_bytes(nonce_hex)});
-        return sm2_verify(msg, id32, sig_raw_hex, pk_hex);
+        Bytes id32 = hex_fixed(id, ID_LEN, "ID_B");
+        Bytes msg = concat({hex_fixed(r_pile_hex, POINT_LEN, "R_B"), id32,
+                            hex_fixed(w_hex, POINT_LEN, "W_B"), nonce_bytes(nonce)});
+        return sm2_verify(msg, id32, sig_raw_hex, full_public_hex);
     } catch (const std::exception&) {
         return false;
     }
 }
 
-bool verify_responder(const std::string& rA_hex, const std::string& rB_hex,
-                      const std::string& idA_hex, const std::string& wA_hex,
-                      const std::string& nonce_hex, const std::string& sig_raw_hex,
-                      const std::string& pk_hex) {
+bool verify_responder(const std::string& r_a_hex, const std::string& r_b_hex,
+                      const std::string& id, const std::string& w_hex,
+                      const std::string& nonce, const std::string& sig_raw_hex,
+                      const std::string& full_public_hex) {
     try {
-        Bytes id32 = hex_fixed(idA_hex, ID_LEN, "ID_A");
-        Bytes msg = concat({hex_fixed(rA_hex, POINT_LEN, "R_A"), hex_fixed(rB_hex, POINT_LEN, "R_B"),
-                            id32, hex_fixed(wA_hex, POINT_LEN, "W_A"), nonce_bytes(nonce_hex)});
-        return sm2_verify(msg, id32, sig_raw_hex, pk_hex);
+        Bytes id32 = hex_fixed(id, ID_LEN, "ID_A");
+        Bytes msg = concat({hex_fixed(r_a_hex, POINT_LEN, "R_A"), hex_fixed(r_b_hex, POINT_LEN, "R_B"),
+                            id32, hex_fixed(w_hex, POINT_LEN, "W_A"), nonce_bytes(nonce)});
+        return sm2_verify(msg, id32, sig_raw_hex, full_public_hex);
     } catch (const std::exception&) {
         return false;
     }
@@ -559,9 +565,9 @@ bool verify_responder(const std::string& rA_hex, const std::string& rB_hex,
 // ===========================================================================
 
 std::string derive_session_key(const std::string& eph_secret_hex, const std::string& peer_point_hex,
-                               const std::string& rA_hex, const std::string& rB_hex,
-                               const std::string& idA_hex, const std::string& idB_hex,
-                               const std::string& nonce_hex) {
+                               const std::string& ra_hex, const std::string& rb_hex,
+                               const std::string& ida_hex, const std::string& idb_hex,
+                               const std::string& nonce) {
     Curve c;
     hex_fixed(eph_secret_hex, SCALAR_LEN, "eph_secret");
     BnPtr a(hex_to_bn(eph_secret_hex), BN_free);
@@ -573,11 +579,11 @@ std::string derive_session_key(const std::string& eph_secret_hex, const std::str
 
     // SK = SM3(Sx ‖ R_A ‖ R_B ‖ ID_A ‖ ID_B ‖ nonce)，单次 SM3
     Bytes z = concat({coord_bytes(sx.get()),
-                      hex_fixed(rA_hex, POINT_LEN, "R_A"),
-                      hex_fixed(rB_hex, POINT_LEN, "R_B"),
-                      hex_fixed(idA_hex, ID_LEN, "ID_A"),
-                      hex_fixed(idB_hex, ID_LEN, "ID_B"),
-                      nonce_bytes(nonce_hex)});
+                      hex_fixed(ra_hex, POINT_LEN, "R_A"),
+                      hex_fixed(rb_hex, POINT_LEN, "R_B"),
+                      hex_fixed(ida_hex, ID_LEN, "ID_A"),
+                      hex_fixed(idb_hex, ID_LEN, "ID_B"),
+                      nonce_bytes(nonce)});
     return bytes_to_hex(sm3(z));
 }
 
@@ -640,8 +646,9 @@ std::string point_from_wire(const std::string& wire_hex) {
     return bytes_to_hex(out);
 }
 
-std::string sm3_hex(const std::string& data_hex) {
-    return bytes_to_hex(sm3(hex_to_bytes(data_hex)));
+std::string sm3_hex_of_ascii(const std::string& ascii) {
+    // 对传入字符串的原始字节做 SM3（不做 hex 解码）
+    return bytes_to_hex(sm3(Bytes(ascii.begin(), ascii.end())));
 }
 
 }  // namespace clpkc

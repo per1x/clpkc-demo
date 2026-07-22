@@ -105,7 +105,7 @@ int main() {
 
     // --- KAT-1 SM3（同时符合 GM/T 0004 标准向量 SM3("abc")）---
     std::printf("[KAT-1] SM3\n");
-    check("sm3_hex(\"abc\")", clpkc::sm3_hex("616263"), SM3_ABC);
+    check("sm3_hex_of_ascii(\"abc\")", clpkc::sm3_hex_of_ascii("abc"), SM3_ABC);
 
     // --- KAT-2 HMAC-SM3 ---
     std::printf("[KAT-2] HMAC-SM3\n");
@@ -143,7 +143,7 @@ int main() {
 
     // --- KAT-6 合成完整私钥 ---
     std::printf("[KAT-6] compose_full_private\n");
-    check("compose_full_private(ua, t)", clpkc::compose_full_private(UA_PILE, T_PILE), SK_PILE);
+    check("compose_full_private(ua, 密文)", clpkc::compose_full_private(UA_PILE, CIPHER_PILE), SK_PILE);
 
     // --- KAT-7 完整公钥重建（λ / HA，ENTL=0x0100）---
     std::printf("[KAT-7] reconstruct_full_public\n");
@@ -198,7 +198,7 @@ int main() {
 
     // --- KAT-12 随机与密钥生成 sanity ---
     std::printf("[KAT-12] generate_keypair / random_bytes_hex\n");
-    clpkc::KeyPair kp = clpkc::generate_keypair();
+    clpkc::KeyMaterial kp = clpkc::generate_static_key();
     check_bool("私钥 64 hex", kp.secret_hex.size() == 64, true);
     check_bool("公钥 128 hex", kp.public_hex.size() == 128, true);
     check_bool("random_bytes_hex(16) 长度 32", clpkc::random_bytes_hex(16).size() == 32, true);

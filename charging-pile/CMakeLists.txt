@@ -21,9 +21,11 @@ endif()
 
 find_package(OpenSSL REQUIRED)
 
+# 密码学实现统一来自 pile-sdk（桩端只有这一份实现）
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../pile-sdk ${CMAKE_CURRENT_BINARY_DIR}/pile-sdk)
+
 add_executable(charging_pile
     src/main.cpp
-    src/crypto_utils.cpp
     src/net_client.cpp
     src/config.cpp
     src/keystore.cpp
@@ -34,4 +36,4 @@ target_include_directories(charging_pile PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
-target_link_libraries(charging_pile PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(charging_pile PRIVATE clpkc_sdk OpenSSL::SSL OpenSSL::Crypto)
