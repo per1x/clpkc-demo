@@ -1,7 +1,7 @@
 # CL-PKC 桩端（主机端）密码学 SDK
 
 国密 **SM2 / SM3 / HMAC-SM3** + 无证书公钥密码学（隐式证书，ECQV/SM2 风格）算法库，供充电桩
-（主机端）集成。C++17 + OpenSSL 3.x，编译产出单个静态库，除 OpenSSL 外无第三方依赖。
+（主机端）集成。C++17 + OpenSSL（1.1.1 及以上，兼容 3.x），编译产出单个静态库，除 OpenSSL 外无第三方依赖。
 
 本文件是**完整的算法规格说明**：按此实现即可与云端互通。配套的固定测试向量见
 [`kat.md`](kat.md)，可用于接入后自验。
@@ -38,7 +38,15 @@ cd build && make test          # 运行 KAT 自检（等价 ctest）
 产物：`libclpkc_sdk.a` 与 `clpkc_sdk.h`。集成方只需包含 `clpkc_sdk.h` 并链接
 `libclpkc_sdk.a` + OpenSSL 的 `libcrypto`。
 
-环境要求：**OpenSSL 3.0 或更高**（需包含 SM2 与 SM3 算法）、C++17 编译器。
+环境要求：**OpenSSL 1.1.1 及以上（兼容 3.x）**、C++17 编译器。
+
+- **只依赖 `libcrypto`**，不需要 `libssl`（本 SDK 不涉及 TLS）。
+- 1.1.1 是 OpenSSL 引入 SM2/SM3 的最低版本，**不支持 1.1.0 及更早**。
+- SDK 内部按 `OPENSSL_VERSION_NUMBER` 自动切换构建 SM2 密钥对象的方式
+  （≥3.0 用 `OSSL_PARAM`/`EVP_PKEY_fromdata`；1.1.1 用 `EC_KEY` + `EVP_PKEY_set_alias_type`），
+  对调用方完全透明，两条分支的算法输出逐字节一致。
+- **交叉编译**：`CMAKE_CROSSCOMPILING` 为真时不会探测宿主机 Homebrew，
+  用 `-DOPENSSL_ROOT_DIR=<目标平台 OpenSSL 路径>` 指定即可。
 
 ---
 

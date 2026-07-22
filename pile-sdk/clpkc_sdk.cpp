@@ -1,15 +1,20 @@
 #include "clpkc_sdk.h"
 
 #include <openssl/bn.h>
-#include <openssl/core_names.h>
 #include <openssl/crypto.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/obj_mac.h>
-#include <openssl/param_build.h>
+#include <openssl/opensslv.h>
 #include <openssl/rand.h>
+
+// OSSL_PARAM / provider 体系为 OpenSSL 3.0 引入，1.1.1 下不存在这两个头文件。
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/core_names.h>
+#include <openssl/param_build.h>
+#endif
 
 #include <cstring>
 #include <memory>
@@ -174,6 +179,13 @@ Bytes nonce_bytes(const std::string& nonce_hex) {
     return hex_fixed(nonce_hex, NONCE_LEN, "nonce");
 }
 
+// 用 pub(SEC1 非压缩 04‖X‖Y) + 可空 priv 构建 SM2 类型的 EVP_PKEY。
+// 两套实现按 OpenSSL 版本切换，行为等价（产出的 EVP_PKEY 在 SM2 签名/验签下结果一致）：
+//   >= 3.0 ：provider 体系，OSSL_PARAM + EVP_PKEY_fromdata。
+//   1.1.1  ：经典 EC_KEY 路径，最后用 EVP_PKEY_set_alias_type 切到 SM2 语义
+//            （该函数是 1.1.1 特有，3.0 已移除，故必须分支）。
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+
 EVP_PKEY* make_sm2_pkey(const Bytes& pub_sec1, const BIGNUM* priv) {
     OSSL_PARAM_BLD* bld = OSSL_PARAM_BLD_new();
     if (!bld) {
@@ -198,6 +210,53 @@ EVP_PKEY* make_sm2_pkey(const Bytes& pub_sec1, const BIGNUM* priv) {
     }
     return pkey;
 }
+
+#else  // OpenSSL 1.1.1
+
+EVP_PKEY* make_sm2_pkey(const Bytes& pub_sec1, const BIGNUM* priv) {
+    EC_KEY* ec = EC_KEY_new_by_curve_name(NID_sm2);
+    if (!ec) {
+        throw Error("EC_KEY_new_by_curve_name(NID_sm2) 失败");
+    }
+    const EC_GROUP* group = EC_KEY_get0_group(ec);
+    EC_POINT* pub = EC_POINT_new(group);
+    if (!pub) {
+        EC_KEY_free(ec);
+        throw Error("EC_POINT_new 失败");
+    }
+    // 公钥：SEC1 非压缩八位串 → EC_POINT
+    if (EC_POINT_oct2point(group, pub, pub_sec1.data(), pub_sec1.size(), nullptr) != 1
+        || EC_KEY_set_public_key(ec, pub) != 1) {
+        EC_POINT_free(pub);
+        EC_KEY_free(ec);
+        throw Error("设置 SM2 公钥失败");
+    }
+    EC_POINT_free(pub);
+    if (priv && EC_KEY_set_private_key(ec, priv) != 1) {
+        EC_KEY_free(ec);
+        throw Error("设置 SM2 私钥失败");
+    }
+
+    EVP_PKEY* pkey = EVP_PKEY_new();
+    if (!pkey) {
+        EC_KEY_free(ec);
+        throw Error("EVP_PKEY_new 失败");
+    }
+    // assign 成功后 ec 的所有权转移给 pkey，不可再单独 free
+    if (EVP_PKEY_assign_EC_KEY(pkey, ec) != 1) {
+        EC_KEY_free(ec);
+        EVP_PKEY_free(pkey);
+        throw Error("EVP_PKEY_assign_EC_KEY 失败");
+    }
+    // 让该 EC 密钥按 SM2 语义参与签名/验签（ZA 计算等）
+    if (EVP_PKEY_set_alias_type(pkey, EVP_PKEY_SM2) != 1) {
+        EVP_PKEY_free(pkey);
+        throw Error("EVP_PKEY_set_alias_type(EVP_PKEY_SM2) 失败");
+    }
+    return pkey;
+}
+
+#endif  // OPENSSL_VERSION_NUMBER
 
 // DER → 裸 r‖s（各 32 字节大端）
 Bytes ecdsa_der_to_raw(const Bytes& der) {

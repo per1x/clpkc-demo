@@ -11,7 +11,8 @@ endif()
 add_compile_options(-Wall -Wextra)
 
 # macOS Homebrew 上 OpenSSL 需显式提示路径；Linux 一般能自动找到。
-if(APPLE AND NOT OPENSSL_ROOT_DIR)
+# 交叉编译时不探测宿主机 brew，一律由工具链/OPENSSL_ROOT_DIR 指定。
+if(APPLE AND NOT CMAKE_CROSSCOMPILING AND NOT OPENSSL_ROOT_DIR)
     execute_process(COMMAND brew --prefix openssl@3 OUTPUT_VARIABLE BREW_OPENSSL
                     OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     if(BREW_OPENSSL)
@@ -19,7 +20,7 @@ if(APPLE AND NOT OPENSSL_ROOT_DIR)
     endif()
 endif()
 
-find_package(OpenSSL 3.0 REQUIRED)
+find_package(OpenSSL 1.1.1 REQUIRED)
 
 # ---- SDK 静态库 ----
 add_library(clpkc_sdk STATIC clpkc_sdk.cpp)
